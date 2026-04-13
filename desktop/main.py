@@ -96,42 +96,106 @@ def handle_send_mode():
 
     elif send_mode == "voice":
         max_seconds = cfg.get("send_listen_seconds", 10)
-        chunk_seconds = 2
-        logger.info(f"Voice-send: listening in {chunk_seconds}s chunks (max {max_seconds}s)...")
+        logger.info(f"Voice-send: listening for up to {max_seconds}s...")
         update_icon(listening=True)
 
         send_triggers = ["senden", "sende", "send", "abschicken", "absenden", "enter"]
-        elapsed = 0
+        detected = _voice_send_listen(max_seconds, send_triggers)
 
-        while elapsed < max_seconds:
-            listen_rec = recorder.AudioRecorder()
-            listen_audio = listen_rec.record_for(chunk_seconds)
-            elapsed += chunk_seconds
-
-            if not listen_audio:
-                continue
-
-            try:
-                result = api_client.transcribe(cfg["server_url"], listen_audio, "raw")
-                heard = (result.get("raw_text") or "").lower().strip()
-
-                if not heard:
-                    logger.debug(f"Voice-send chunk {elapsed}s: silence")
-                    continue
-
-                logger.info(f"Voice-send heard: '{heard}'")
-
-                if any(trigger in heard for trigger in send_triggers):
-                    logger.info("Send command detected — pressing Enter")
-                    text_inserter.press_enter()
-                    break
-            except Exception as e:
-                logger.error(f"Voice-send chunk failed: {e}")
-
-        if elapsed >= max_seconds:
-            logger.info("Voice-send: timeout, no send command detected")
+        if detected:
+            logger.info("Send command detected — pressing Enter")
+            text_inserter.press_enter()
+        else:
+            logger.info("Voice-send: no send command detected")
 
         update_icon()
+
+
+def _voice_send_listen(max_seconds: float, triggers: list[str]) -> bool:
+    """Listen for a voice command using local voice activity detection.
+
+    Records continuously, checks audio level every 0.5s. When speech is
+    detected (volume above threshold), accumulates audio until silence
+    returns, then sends the speech segment to the server for transcription.
+    Returns True if a trigger word was found.
+    """
+    import numpy as np
+    import sounddevice as sd
+    import io
+    import wave
+    import time
+
+    sample_rate = 16000
+    chunk_samples = int(sample_rate * 0.5)  # 0.5 second chunks
+    silence_threshold = 500  # RMS amplitude threshold for speech detection
+    min_speech_chunks = 2  # Need at least 1 second of speech
+    max_silence_after_speech = 3  # Stop after 1.5s silence following speech
+
+    speech_chunks = []
+    silence_after_speech = 0
+    is_speaking = False
+    start_time = time.time()
+
+    while (time.time() - start_time) < max_seconds:
+        # Record 0.5 seconds
+        audio_data = sd.rec(chunk_samples, samplerate=sample_rate, channels=1, dtype="int16")
+        sd.wait()
+
+        rms = np.sqrt(np.mean(audio_data.astype(np.float32) ** 2))
+
+        if rms > silence_threshold:
+            # Speech detected
+            speech_chunks.append(audio_data)
+            silence_after_speech = 0
+            is_speaking = True
+        elif is_speaking:
+            # Silence after speech
+            speech_chunks.append(audio_data)
+            silence_after_speech += 1
+
+            if silence_after_speech >= max_silence_after_speech:
+                # Speech ended — transcribe what we have
+                if len(speech_chunks) >= min_speech_chunks:
+                    heard = _transcribe_chunks(speech_chunks, sample_rate)
+                    logger.info(f"Voice-send heard: '{heard}'")
+                    if any(t in heard for t in triggers):
+                        return True
+
+                # Reset for next utterance
+                speech_chunks = []
+                silence_after_speech = 0
+                is_speaking = False
+
+    # Timeout — check any remaining speech
+    if len(speech_chunks) >= min_speech_chunks:
+        heard = _transcribe_chunks(speech_chunks, sample_rate)
+        logger.info(f"Voice-send heard (timeout): '{heard}'")
+        if any(t in heard for t in triggers):
+            return True
+
+    return False
+
+
+def _transcribe_chunks(chunks, sample_rate: int) -> str:
+    """Convert audio chunks to WAV and transcribe via server."""
+    import numpy as np
+    import io
+    import wave
+
+    audio = np.concatenate(chunks, axis=0)
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(sample_rate)
+        wf.writeframes(audio.tobytes())
+
+    try:
+        result = api_client.transcribe(cfg["server_url"], buf.getvalue(), "raw")
+        return (result.get("raw_text") or "").lower().strip()
+    except Exception as e:
+        logger.error(f"Voice-send transcription failed: {e}")
+        return ""
 
 
 # --- Tray icon ---
