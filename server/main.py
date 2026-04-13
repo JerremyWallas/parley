@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 import httpx
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 import config
 import transcriber
@@ -225,7 +225,7 @@ async def get_models():
 
 @app.put("/api/models")
 async def set_model(data: dict):
-    """Set the active LLM model. Pulls it if not yet installed."""
+    """Set the active LLM model."""
     model_id = data.get("model", "").strip()
     if not model_id:
         raise HTTPException(400, "Field 'model' is required.")
@@ -235,6 +235,46 @@ async def set_model(data: dict):
     personalization.save_preferences(prefs)
 
     return {"active": model_id}
+
+
+@app.post("/api/models/pull")
+async def pull_model(data: dict):
+    """Pull an Ollama model with streaming progress via SSE."""
+    model_id = data.get("model", "").strip()
+    if not model_id:
+        raise HTTPException(400, "Field 'model' is required.")
+
+    async def stream_progress():
+        try:
+            async with httpx.AsyncClient(timeout=None) as client:
+                async with client.stream(
+                    "POST",
+                    f"{config.OLLAMA_URL}/api/pull",
+                    json={"model": model_id, "stream": True},
+                ) as response:
+                    async for line in response.aiter_lines():
+                        if not line:
+                            continue
+                        progress = json.loads(line)
+                        status = progress.get("status", "")
+                        total = progress.get("total", 0)
+                        completed = progress.get("completed", 0)
+                        pct = round(completed / total * 100, 1) if total > 0 else 0
+
+                        event = json.dumps({
+                            "status": status,
+                            "percent": pct,
+                            "completed": completed,
+                            "total": total,
+                        })
+                        yield f"data: {event}\n\n"
+
+                        if status == "success":
+                            break
+        except Exception as e:
+            yield f"data: {json.dumps({'status': 'error', 'message': str(e)})}\n\n"
+
+    return StreamingResponse(stream_progress(), media_type="text/event-stream")
 
 
 # --- WebSocket streaming endpoint ---

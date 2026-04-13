@@ -540,41 +540,135 @@ document.getElementById("glossaryInput").addEventListener("keydown", (e) => {
 async function loadModels() {
   const container = document.getElementById("modelSelector");
   const modelStatusEl = document.getElementById("modelStatus");
+  modelStatusEl.innerHTML = "";
   try {
     const data = await apiGet("/api/models");
     container.innerHTML = "";
     for (const model of data.models) {
+      const isActive = model.id === data.active;
       const el = document.createElement("div");
-      el.className = "model-option" + (model.id === data.active ? " active" : "");
-      el.innerHTML = `
-        <div class="model-info">
-          <span class="model-name">${escapeHtml(model.name)}${model.installed ? "" : " (nicht installiert)"}</span>
-          <span class="model-desc">${escapeHtml(model.desc)}</span>
-        </div>
-        <span class="model-vram">${escapeHtml(model.vram)}</span>
+      el.className = "model-option" + (isActive ? " active" : "");
+
+      const infoDiv = document.createElement("div");
+      infoDiv.className = "model-info";
+      infoDiv.innerHTML = `
+        <span class="model-name">${escapeHtml(model.name)}</span>
+        <span class="model-desc">${escapeHtml(model.desc)}</span>
       `;
+
+      const actionsDiv = document.createElement("div");
+      actionsDiv.className = "model-actions";
+
+      if (!model.installed) {
+        // Download button + VRAM badge
+        const dlBtn = document.createElement("button");
+        dlBtn.className = "model-dl-btn";
+        dlBtn.title = "Modell herunterladen";
+        dlBtn.textContent = "⬇";
+        dlBtn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          pullModel(model.id, el, dlBtn);
+        });
+        actionsDiv.appendChild(dlBtn);
+      }
+
+      const vramBadge = document.createElement("span");
+      vramBadge.className = "model-vram";
+      vramBadge.textContent = model.vram;
+      actionsDiv.appendChild(vramBadge);
+
+      el.appendChild(infoDiv);
+      el.appendChild(actionsDiv);
+
+      // Click to activate (only if installed)
       el.addEventListener("click", async () => {
-        modelStatusEl.innerHTML = '<span style="color:var(--accent)">Modell wird gewechselt...</span>';
+        if (!model.installed) {
+          modelStatusEl.innerHTML = '<span style="color:var(--text-muted)">Modell muss erst heruntergeladen werden.</span>';
+          return;
+        }
         try {
           await fetch(apiUrl("/api/models"), {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ model: model.id }),
           });
-          if (!model.installed) {
-            modelStatusEl.innerHTML = '<span style="color:var(--accent)">Modell wird heruntergeladen — das kann dauern.</span>';
-          } else {
-            modelStatusEl.innerHTML = '<span style="color:var(--success)">Modell gewechselt!</span>';
-          }
+          modelStatusEl.innerHTML = '<span style="color:var(--success)">Modell gewechselt!</span>';
           await loadModels();
         } catch (err) {
           modelStatusEl.innerHTML = '<span style="color:var(--recording)">Fehler: ' + escapeHtml(err.message) + '</span>';
         }
       });
+
       container.appendChild(el);
     }
   } catch {
     container.innerHTML = '<p style="color:var(--text-muted);font-size:0.85rem">Server nicht erreichbar</p>';
+  }
+}
+
+async function pullModel(modelId, optionEl, dlBtn) {
+  // Replace download button with progress bar
+  dlBtn.remove();
+  const progressWrap = document.createElement("div");
+  progressWrap.className = "model-progress-wrap";
+  progressWrap.innerHTML = `
+    <div class="model-progress-bar"><div class="model-progress-fill" style="width:0%"></div></div>
+    <span class="model-progress-text">0%</span>
+  `;
+  optionEl.querySelector(".model-actions").prepend(progressWrap);
+
+  const fill = progressWrap.querySelector(".model-progress-fill");
+  const text = progressWrap.querySelector(".model-progress-text");
+  const modelStatusEl = document.getElementById("modelStatus");
+
+  try {
+    const resp = await fetch(apiUrl("/api/models/pull"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: modelId }),
+    });
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop();
+
+      for (const line of lines) {
+        if (!line.startsWith("data: ")) continue;
+        const data = JSON.parse(line.slice(6));
+
+        if (data.status === "error") {
+          text.textContent = "Fehler";
+          modelStatusEl.innerHTML = '<span style="color:var(--recording)">Download fehlgeschlagen: ' + escapeHtml(data.message) + '</span>';
+          return;
+        }
+
+        if (data.percent > 0) {
+          fill.style.width = data.percent + "%";
+          text.textContent = data.percent + "%";
+        } else {
+          text.textContent = data.status;
+        }
+
+        if (data.status === "success") {
+          text.textContent = "Fertig!";
+          fill.style.width = "100%";
+          modelStatusEl.innerHTML = '<span style="color:var(--success)">Download abgeschlossen!</span>';
+          setTimeout(() => loadModels(), 1000);
+          return;
+        }
+      }
+    }
+  } catch (err) {
+    text.textContent = "Fehler";
+    modelStatusEl.innerHTML = '<span style="color:var(--recording)">Download fehlgeschlagen</span>';
   }
 }
 
