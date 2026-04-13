@@ -103,8 +103,8 @@ header h1 {
 
 #visualizer {
   position: relative;
-  width: 200px;
-  height: 200px;
+  width: 260px;
+  height: 260px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -116,6 +116,7 @@ header h1 {
   position: absolute;
   top: 0;
   left: 0;
+  pointer-events: none;
 }
 
 #recordBtn {
@@ -133,6 +134,7 @@ header h1 {
   gap: 8px;
   transition: all 0.2s;
   position: relative;
+  z-index: 1;
   touch-action: none;
 }
 

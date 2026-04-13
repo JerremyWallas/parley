@@ -348,7 +348,7 @@ function drawWaveform() {
   const height = canvas.height;
   const centerX = width / 2;
   const centerY = height / 2;
-  const radius = 70;
+  const radius = 95; // Just outside the 180px button (90px radius + border)
 
   canvasCtx.clearRect(0, 0, width, height);
 
@@ -357,7 +357,7 @@ function drawWaveform() {
 
   for (let i = 0; i < bars; i++) {
     const value = dataArray[i * step] / 255;
-    const barHeight = value * 30 + 2;
+    const barHeight = value * 25 + 2;
     const angle = (i / bars) * Math.PI * 2 - Math.PI / 2;
 
     const x1 = centerX + Math.cos(angle) * radius;
