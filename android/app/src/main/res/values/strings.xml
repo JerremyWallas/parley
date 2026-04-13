@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Parley</string>
+    <string name="accessibility_description">Parley Overlay: Floating microphone button for voice-to-text input</string>
+    <string name="server_url_label">Server URL</string>
+    <string name="server_url_hint">https://192.168.1.100:7443</string>
+    <string name="mode_label">Modus</string>
+    <string name="mode_raw">Raw</string>
+    <string name="mode_cleanup">Cleanup</string>
+    <string name="mode_rephrase">Reformulieren</string>
+    <string name="enable_service">Accessibility Service aktivieren</string>
+    <string name="save">Speichern</string>
+    <string name="recording">Aufnahme...</string>
+    <string name="processing">Verarbeite...</string>
+</resources>

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- SECURITY: Erlaubt Self-Signed Certs und Cleartext fuer den Heimserver.
+         Fuer Produktions-Apps: cleartextTrafficPermitted="false" und nur system-Zertifikate. -->
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+            <certificates src="user" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

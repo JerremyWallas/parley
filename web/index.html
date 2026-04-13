@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <meta name="theme-color" content="#0f172a">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>Parley</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎙</text></svg>">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app">
+    <!-- Header -->
+    <header>
+      <h1>Parley</h1>
+      <button id="settingsBtn" class="icon-btn" title="Einstellungen">⚙</button>
+    </header>
+
+    <!-- Mode selector -->
+    <div id="modeSelector">
+      <button class="mode-btn active" data-mode="raw">Raw</button>
+      <button class="mode-btn" data-mode="cleanup">Cleanup</button>
+      <button class="mode-btn" data-mode="rephrase">Reformulieren</button>
+    </div>
+
+    <!-- Record button -->
+    <div id="recordArea">
+      <div id="visualizer">
+        <canvas id="waveform" width="200" height="200"></canvas>
+      </div>
+      <button id="recordBtn" aria-label="Aufnahme starten">
+        <span class="mic-icon">🎙</span>
+        <span class="label">Halten zum Sprechen</span>
+      </button>
+      <div id="status"></div>
+    </div>
+
+    <!-- Result area -->
+    <div id="resultArea" class="hidden">
+      <div id="resultHeader">
+        <span id="resultMeta"></span>
+        <button id="copyBtn" class="icon-btn" title="Kopieren">📋</button>
+      </div>
+      <div id="rawText" class="hidden">
+        <label>Original:</label>
+        <p></p>
+      </div>
+      <div id="processedText">
+        <textarea id="resultText" rows="4" placeholder="Ergebnis..."></textarea>
+      </div>
+      <div id="resultActions">
+        <button id="saveCorrection" class="secondary-btn">Korrektur speichern</button>
+        <span id="correctionStatus"></span>
+      </div>
+    </div>
+
+    <!-- History -->
+    <div id="historyArea">
+      <h2>Verlauf <button id="clearHistory" class="text-btn">Löschen</button></h2>
+      <div id="historyList"></div>
+    </div>
+
+    <!-- Settings modal -->
+    <div id="settingsModal" class="modal hidden">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2>Einstellungen</h2>
+          <button id="closeSettings" class="icon-btn">✕</button>
+        </div>
+
+        <section>
+          <h3>Glossar</h3>
+          <p class="hint">Wörter die Whisper besser erkennen soll (Fachbegriffe, Namen etc.)</p>
+          <div id="glossaryList"></div>
+          <div class="input-row">
+            <input type="text" id="glossaryInput" placeholder="Neues Wort...">
+            <button id="addGlossaryBtn" class="secondary-btn">+</button>
+          </div>
+        </section>
+
+        <section>
+          <h3>Sprachstatistik</h3>
+          <div id="langStats"></div>
+        </section>
+
+        <section>
+          <h3>Server</h3>
+          <div class="input-row">
+            <input type="text" id="serverUrl" placeholder="https://server-ip:7443">
+            <button id="saveServerUrl" class="secondary-btn">Speichern</button>
+          </div>
+          <div id="serverStatus"></div>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

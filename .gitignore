@@ -1,0 +1,34 @@
+# Data
+data/
+nginx/certs/
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+*.spec.bak
+
+# Desktop build output
+desktop/dist/
+desktop/build/
+
+# Android
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.idea/
+*.apk
+
+# Environment
+.env
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
