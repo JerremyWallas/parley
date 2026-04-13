@@ -112,77 +112,106 @@ def handle_send_mode():
 
 
 def _voice_send_listen(max_seconds: float, triggers: list[str]) -> bool:
-    """Listen for a voice command using local voice activity detection.
+    """Listen for a voice command using a continuous audio stream.
 
-    Records continuously, checks audio level every 0.5s. When speech is
-    detected (volume above threshold), accumulates audio until silence
-    returns, then sends the speech segment to the server for transcription.
-    Returns True if a trigger word was found.
+    Uses a non-stop InputStream so no audio is ever missed. A callback
+    writes every frame into a ring buffer. The main loop checks the
+    buffer for speech (RMS above threshold). When speech ends, the
+    segment is sent to the server for transcription.
     """
     import numpy as np
     import sounddevice as sd
     import io
     import wave
     import time
+    import threading
 
     sample_rate = 16000
-    chunk_samples = int(sample_rate * 0.5)  # 0.5 second chunks
-    silence_threshold = 500  # RMS amplitude threshold for speech detection
-    min_speech_chunks = 2  # Need at least 1 second of speech
-    max_silence_after_speech = 3  # Stop after 1.5s silence following speech
+    block_size = 1600  # 100ms blocks (16000 * 0.1)
+    silence_threshold = 500
+    # How many silent blocks (100ms each) after speech before we transcribe
+    silence_blocks_needed = 12  # 1.2 seconds of silence after speech
+    min_speech_blocks = 5  # At least 0.5s of speech
 
-    speech_chunks = []
-    silence_after_speech = 0
+    all_blocks = []
+    speech_blocks = []
+    silent_count = 0
     is_speaking = False
+    found = False
+    lock = threading.Lock()
+
+    def audio_callback(indata, frames, time_info, status):
+        nonlocal is_speaking, silent_count, found
+        block = indata.copy()
+
+        with lock:
+            all_blocks.append(block)
+            rms = np.sqrt(np.mean(block.astype(np.float32) ** 2))
+
+            if rms > silence_threshold:
+                speech_blocks.append(block)
+                silent_count = 0
+                is_speaking = True
+            elif is_speaking:
+                speech_blocks.append(block)
+                silent_count += 1
+
+    stream = sd.InputStream(
+        samplerate=sample_rate,
+        channels=1,
+        dtype="int16",
+        blocksize=block_size,
+        callback=audio_callback,
+    )
+    stream.start()
+
     start_time = time.time()
+    try:
+        while (time.time() - start_time) < max_seconds:
+            time.sleep(0.05)  # Check every 50ms
 
-    while (time.time() - start_time) < max_seconds:
-        # Record 0.5 seconds
-        audio_data = sd.rec(chunk_samples, samplerate=sample_rate, channels=1, dtype="int16")
-        sd.wait()
+            with lock:
+                if is_speaking and silent_count >= silence_blocks_needed:
+                    # Speech segment ended — transcribe it
+                    if len(speech_blocks) >= min_speech_blocks:
+                        audio_to_send = list(speech_blocks)
+                        speech_blocks.clear()
+                        silent_count = 0
+                        is_speaking = False
 
-        rms = np.sqrt(np.mean(audio_data.astype(np.float32) ** 2))
+                        heard = _transcribe_blocks(audio_to_send, sample_rate)
+                        logger.info(f"Voice-send heard: '{heard}'")
+                        if any(t in heard for t in triggers):
+                            found = True
+                            break
+                    else:
+                        # Too short, discard
+                        speech_blocks.clear()
+                        silent_count = 0
+                        is_speaking = False
 
-        if rms > silence_threshold:
-            # Speech detected
-            speech_chunks.append(audio_data)
-            silence_after_speech = 0
-            is_speaking = True
-        elif is_speaking:
-            # Silence after speech
-            speech_chunks.append(audio_data)
-            silence_after_speech += 1
-
-            if silence_after_speech >= max_silence_after_speech:
-                # Speech ended — transcribe what we have
-                if len(speech_chunks) >= min_speech_chunks:
-                    heard = _transcribe_chunks(speech_chunks, sample_rate)
-                    logger.info(f"Voice-send heard: '{heard}'")
+        # Timeout — check remaining speech
+        if not found:
+            with lock:
+                if len(speech_blocks) >= min_speech_blocks:
+                    heard = _transcribe_blocks(list(speech_blocks), sample_rate)
+                    logger.info(f"Voice-send heard (timeout): '{heard}'")
                     if any(t in heard for t in triggers):
-                        return True
+                        found = True
+    finally:
+        stream.stop()
+        stream.close()
 
-                # Reset for next utterance
-                speech_chunks = []
-                silence_after_speech = 0
-                is_speaking = False
-
-    # Timeout — check any remaining speech
-    if len(speech_chunks) >= min_speech_chunks:
-        heard = _transcribe_chunks(speech_chunks, sample_rate)
-        logger.info(f"Voice-send heard (timeout): '{heard}'")
-        if any(t in heard for t in triggers):
-            return True
-
-    return False
+    return found
 
 
-def _transcribe_chunks(chunks, sample_rate: int) -> str:
-    """Convert audio chunks to WAV and transcribe via server."""
+def _transcribe_blocks(blocks, sample_rate: int) -> str:
+    """Convert audio blocks to WAV and transcribe via server."""
     import numpy as np
     import io
     import wave
 
-    audio = np.concatenate(chunks, axis=0)
+    audio = np.concatenate(blocks, axis=0)
     buf = io.BytesIO()
     with wave.open(buf, "wb") as wf:
         wf.setnchannels(1)
