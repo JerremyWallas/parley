@@ -5,7 +5,9 @@ CONFIG_FILE = Path.home() / ".config" / "parley" / "config.json"
 
 DEFAULTS = {
     "server_url": "https://localhost:7443",
-    "hotkey": "<ctrl>+<shift>+space",
+    "hotkey_hold": "<ctrl>+<shift>+space",
+    "hotkey_toggle": "<ctrl>+<alt>+space",
+    "stop_key": "<esc>",
     "mode": "raw",
     "auto_paste": True,
     "autostart": False,

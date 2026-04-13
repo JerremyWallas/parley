@@ -11,6 +11,7 @@ a = Analysis(
         'pynput.mouse._win32',
         'settings_ui',
         'overlay',
+        'icon',
         'urllib3',
         'websocket',
     ],
@@ -35,5 +36,5 @@ exe = EXE(
     strip=False,
     upx=True,
     console=False,
-    icon=None,
+    icon='parley.ico',
 )

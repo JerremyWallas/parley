@@ -2,7 +2,6 @@ import sys
 import threading
 import logging
 import urllib3
-from PIL import Image, ImageDraw
 from pynput import keyboard
 import pystray
 
@@ -12,6 +11,7 @@ import api_client
 import text_inserter
 import settings_ui
 from overlay import RecordingOverlay
+from icon import create_tray_icon
 
 # Suppress SSL warnings for self-signed certs
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -22,10 +22,14 @@ logger = logging.getLogger(__name__)
 # --- State ---
 cfg = config.load()
 audio_rec = recorder.AudioRecorder()
-hotkey_parts = []
+hold_parts = []
+toggle_parts = []
+stop_parts = []
 pressed_keys = set()
 tray_icon = None
 overlay = RecordingOverlay()
+last_result_text = ""
+_active_mode = None  # None, "hold", or "toggle"
 _streaming_session = None
 
 
@@ -43,47 +47,74 @@ def key_to_str(key) -> str:
     return str(key)
 
 
-def on_key_press(key):
+def _start_recording():
+    """Start a new streaming recording session."""
     global _streaming_session
+    logger.info("Starting streaming recording")
+    update_icon(recording=True)
+
+    _streaming_session = api_client.StreamingSession(
+        server_url=cfg["server_url"],
+        mode=cfg["mode"],
+        on_segment=_on_segment,
+        on_llm_token=_on_llm_token,
+        on_done=_on_done,
+        on_error=_on_error,
+    )
+    _streaming_session.start()
+    audio_rec.start()
+
+
+def _stop_recording():
+    """Stop recording and send audio for processing."""
+    global _streaming_session, _active_mode
+    _active_mode = None
+    logger.info("Stopping recording — sending audio via WebSocket")
+    wav_bytes = audio_rec.stop()
+    update_icon(processing=True)
+
+    if _streaming_session and wav_bytes:
+        _streaming_session.send_audio(wav_bytes)
+        _streaming_session.finish()
+    elif _streaming_session:
+        _streaming_session.close()
+        _streaming_session = None
+        update_icon()
+
+
+def on_key_press(key):
+    global _active_mode
     key_str = key_to_str(key)
     pressed_keys.add(key_str)
 
-    # Check if all hotkey parts are pressed
-    if all(part in pressed_keys for part in hotkey_parts):
+    # Hold hotkey pressed — start hold recording
+    if not audio_rec.is_recording and all(part in pressed_keys for part in hold_parts):
+        _active_mode = "hold"
+        _start_recording()
+        return
+
+    # Toggle hotkey pressed
+    if all(part in pressed_keys for part in toggle_parts):
         if not audio_rec.is_recording:
-            logger.info("Hotkey pressed — starting streaming recording")
-            update_icon(recording=True)
+            _active_mode = "toggle"
+            _start_recording()
+        elif _active_mode == "toggle":
+            _stop_recording()
+        return
 
-            # Open WebSocket session and start streaming audio
-            _streaming_session = api_client.StreamingSession(
-                server_url=cfg["server_url"],
-                mode=cfg["mode"],
-                on_segment=_on_segment,
-                on_llm_token=_on_llm_token,
-                on_done=_on_done,
-                on_error=_on_error,
-            )
-            _streaming_session.start()
-
-            # Start recording with chunk callback that streams to server
-            audio_rec.start(
-                on_chunk=lambda wav_bytes: _streaming_session.send_audio(wav_bytes),
-                chunk_interval_ms=500,
-            )
+    # Stop key pressed while in toggle mode
+    if audio_rec.is_recording and _active_mode == "toggle":
+        if key_str in stop_parts:
+            _stop_recording()
 
 
 def on_key_release(key):
-    global _streaming_session
+    global _active_mode
     key_str = key_to_str(key)
 
-    if audio_rec.is_recording and key_str in hotkey_parts:
-        logger.info("Hotkey released — stopping recording, waiting for results")
-        audio_rec.stop()
-        update_icon(processing=True)
-
-        # Tell server we're done recording
-        if _streaming_session:
-            _streaming_session.finish()
+    # Hold mode: stop when any hold hotkey part is released
+    if audio_rec.is_recording and _active_mode == "hold" and key_str in hold_parts:
+        _stop_recording()
 
     pressed_keys.discard(key_str)
 
@@ -100,18 +131,40 @@ def _on_llm_token(token: str):
 
 def _on_done(raw_text: str, processed_text: str):
     """Called when transcription + LLM processing is complete."""
-    global _streaming_session
+    global _streaming_session, last_result_text
     _streaming_session = None
     text = processed_text or raw_text
 
     if text:
+        last_result_text = text
         text_inserter.insert_text(text, auto_paste=cfg.get("auto_paste", True))
         logger.info(f"Inserted: {text[:80]}...")
         update_icon()
+        # Update tray menu to show last result preview
+        if tray_icon:
+            tray_icon.menu = build_menu()
+        # Save to server history
+        _save_to_server_history(raw_text, text)
         handle_send_mode()
     else:
         logger.warning("Empty transcription result")
         update_icon()
+
+
+def _save_to_server_history(raw_text: str, processed_text: str):
+    """Save transcription to server history so it shows in the web app."""
+    try:
+        import httpx
+        url = f"{cfg['server_url'].rstrip('/')}/api/history"
+        httpx.post(url, json={
+            "raw_text": raw_text,
+            "processed_text": processed_text,
+            "mode": cfg.get("mode", "raw"),
+            "language": "",
+        }, verify=False, timeout=5.0)
+        logger.debug("Saved to server history")
+    except Exception as e:
+        logger.debug(f"Could not save to server history: {e}")
 
 
 def _on_error(message: str):
@@ -273,35 +326,22 @@ def _transcribe_blocks(blocks, sample_rate: int) -> str:
 
 # --- Tray icon ---
 
-def create_icon_image(color: str = "#3b82f6") -> Image.Image:
-    """Create a simple circular tray icon."""
-    size = 64
-    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
-    draw.ellipse([4, 4, size - 4, size - 4], fill=color)
-    # Simple mic shape
-    cx, cy = size // 2, size // 2
-    draw.rounded_rectangle([cx - 6, cy - 14, cx + 6, cy + 4], radius=6, fill="white")
-    draw.arc([cx - 10, cy - 6, cx + 10, cy + 10], start=0, end=180, fill="white", width=2)
-    draw.line([cx, cy + 10, cx, cy + 16], fill="white", width=2)
-    return img
-
 
 def update_icon(recording: bool = False, processing: bool = False, listening: bool = False):
     global tray_icon
     if tray_icon is None:
         return
     if recording:
-        tray_icon.icon = create_icon_image("#ef4444")  # red
+        tray_icon.icon = create_tray_icon("#ef4444")  # red
         overlay.show("recording")
     elif processing:
-        tray_icon.icon = create_icon_image("#f59e0b")  # orange
+        tray_icon.icon = create_tray_icon("#f59e0b")  # orange
         overlay.update_state("processing")
     elif listening:
-        tray_icon.icon = create_icon_image("#22c55e")  # green — waiting for "senden"
+        tray_icon.icon = create_tray_icon("#22c55e")  # green — waiting for "senden"
         overlay.update_state("listening")
     else:
-        tray_icon.icon = create_icon_image("#3b82f6")  # blue
+        tray_icon.icon = create_tray_icon("#3b82f6")  # blue
         overlay.hide()
 
 
@@ -328,10 +368,12 @@ def toggle_auto_paste(icon, item):
 def open_settings(icon, item):
     """Open settings window and apply changes."""
     def on_save(new_cfg):
-        global cfg, hotkey_parts
+        global cfg, hold_parts, toggle_parts, stop_parts
         cfg = new_cfg
-        hotkey_parts = parse_hotkey(cfg["hotkey"])
-        logger.info(f"Settings updated — Hotkey: {cfg['hotkey']}, Server: {cfg['server_url']}, Mode: {cfg['mode']}")
+        hold_parts = parse_hotkey(cfg["hotkey_hold"])
+        toggle_parts = parse_hotkey(cfg["hotkey_toggle"])
+        stop_parts = parse_hotkey(cfg["stop_key"])
+        logger.info(f"Settings updated — Hold: {cfg['hotkey_hold']}, Toggle: {cfg['hotkey_toggle']}, Server: {cfg['server_url']}")
         # Rebuild tray menu to reflect new settings
         if tray_icon:
             tray_icon.menu = build_menu()
@@ -339,11 +381,31 @@ def open_settings(icon, item):
     threading.Thread(target=settings_ui.open_settings, args=(cfg, on_save), daemon=True).start()
 
 
+def copy_last_result(icon, item):
+    """Copy the last transcription result to clipboard."""
+    if last_result_text:
+        import pyperclip
+        pyperclip.copy(last_result_text)
+        logger.info(f"Copied last result to clipboard: {last_result_text[:50]}...")
+    else:
+        logger.info("No previous result to copy")
+
+
+def paste_last_result(icon, item):
+    """Paste the last transcription result into the active window."""
+    if last_result_text:
+        text_inserter.insert_text(last_result_text, auto_paste=cfg.get("auto_paste", True))
+        logger.info(f"Re-pasted last result: {last_result_text[:50]}...")
+    else:
+        logger.info("No previous result to paste")
+
+
 def quit_app(icon, item):
     icon.stop()
 
 
 def build_menu():
+    last_preview = (last_result_text[:30] + "...") if len(last_result_text) > 30 else last_result_text
     return pystray.Menu(
         pystray.MenuItem("Modus", pystray.Menu(
             pystray.MenuItem("Raw", set_mode("raw"), checked=get_mode_checked("raw")),
@@ -351,9 +413,19 @@ def build_menu():
             pystray.MenuItem("Reformulieren", set_mode("rephrase"), checked=get_mode_checked("rephrase")),
         )),
         pystray.Menu.SEPARATOR,
+        pystray.MenuItem(
+            f"Letzte: {last_preview}" if last_result_text else "Kein letztes Ergebnis",
+            pystray.Menu(
+                pystray.MenuItem("In Zwischenablage kopieren", copy_last_result),
+                pystray.MenuItem("Nochmal einfuegen", paste_last_result),
+            ),
+            enabled=bool(last_result_text),
+        ),
+        pystray.Menu.SEPARATOR,
         pystray.MenuItem("Auto-Paste", toggle_auto_paste,
                          checked=lambda item: cfg.get("auto_paste", True)),
-        pystray.MenuItem(f"Hotkey: {cfg['hotkey']}", lambda *a: None, enabled=False),
+        pystray.MenuItem(f"Halten: {cfg.get('hotkey_hold', '')}", lambda *a: None, enabled=False),
+        pystray.MenuItem(f"Freihand: {cfg.get('hotkey_toggle', '')}", lambda *a: None, enabled=False),
         pystray.MenuItem(f"Server: {cfg['server_url']}", lambda *a: None, enabled=False),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Einstellungen...", open_settings),
@@ -362,15 +434,18 @@ def build_menu():
 
 
 def main():
-    global tray_icon, hotkey_parts
+    global tray_icon, hold_parts, toggle_parts, stop_parts
 
-    logger.info(f"Parley Desktop Client")
+    logger.info("Parley Desktop Client")
     logger.info(f"Server: {cfg['server_url']}")
-    logger.info(f"Hotkey: {cfg['hotkey']}")
     logger.info(f"Mode: {cfg['mode']}")
 
-    hotkey_parts = parse_hotkey(cfg["hotkey"])
-    logger.info(f"Listening for hotkey: {hotkey_parts}")
+    hold_parts = parse_hotkey(cfg["hotkey_hold"])
+    toggle_parts = parse_hotkey(cfg["hotkey_toggle"])
+    stop_parts = parse_hotkey(cfg["stop_key"])
+    logger.info(f"Hold hotkey: {hold_parts}")
+    logger.info(f"Toggle hotkey: {toggle_parts}")
+    logger.info(f"Stop key: {stop_parts}")
 
     # Start keyboard listener
     listener = keyboard.Listener(on_press=on_key_press, on_release=on_key_release)
@@ -379,7 +454,7 @@ def main():
     # Create and run tray icon
     tray_icon = pystray.Icon(
         "parley",
-        create_icon_image(),
+        create_tray_icon(),
         "Parley",
         menu=build_menu(),
     )

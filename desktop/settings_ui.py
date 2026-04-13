@@ -1,9 +1,33 @@
 """Settings window for Parley Desktop Client using tkinter."""
+import ctypes
 import tkinter as tk
-from tkinter import ttk
 from pynput import keyboard as kb
+from PIL import ImageTk
+
+# Enable DPI awareness for sharp rendering on high-DPI displays
+try:
+    ctypes.windll.shcore.SetProcessDpiAwareness(2)
+except Exception:
+    try:
+        ctypes.windll.user32.SetProcessDPIAware()
+    except Exception:
+        pass
 
 import config
+from icon import create_parley_icon
+
+# --- Design constants ---
+BG = "#0f172a"
+SURFACE = "#1e293b"
+SURFACE_HOVER = "#334155"
+BORDER = "#475569"
+TEXT = "#f1f5f9"
+TEXT_MUTED = "#94a3b8"
+ACCENT = "#3b82f6"
+FONT = "Segoe UI"
+FONT_SIZE = 11
+FONT_SMALL = 10
+FONT_HINT = 9
 
 
 class HotkeyRecorder:
@@ -42,7 +66,6 @@ class HotkeyRecorder:
             self.label.config(text=" + ".join(self.parts))
 
     def _on_release(self, key):
-        # When any key is released, finalize the combination
         if self.listener:
             self.listener.stop()
             self.listener = None
@@ -51,93 +74,203 @@ class HotkeyRecorder:
 
 
 class SettingsWindow:
-    """Tkinter settings window."""
+    """Modern settings window."""
 
     def __init__(self, cfg: dict, on_save):
         self.cfg = cfg.copy()
         self.on_save = on_save
         self.recorder = None
 
+    def _make_section(self, parent, title):
+        """Create a styled section card with title."""
+        frame = tk.Frame(parent, bg=SURFACE, bd=0, highlightthickness=0)
+        frame.pack(fill="x", padx=24, pady=(0, 12))
+
+        # Inner padding
+        inner = tk.Frame(frame, bg=SURFACE)
+        inner.pack(fill="x", padx=16, pady=14)
+
+        if title:
+            tk.Label(inner, text=title, font=(FONT, FONT_SMALL, "bold"),
+                     bg=SURFACE, fg=TEXT_MUTED).pack(anchor="w", pady=(0, 8))
+
+        return inner
+
+    def _make_entry(self, parent, value="", fg=TEXT):
+        """Create a styled input field."""
+        entry = tk.Entry(parent, font=(FONT, FONT_SIZE), bg=BG, fg=fg,
+                         insertbackground=TEXT, relief="flat", bd=0,
+                         highlightthickness=1, highlightcolor=ACCENT,
+                         highlightbackground=BORDER)
+        entry.insert(0, value)
+        # Padding inside entry via a frame wrapper
+        wrapper = tk.Frame(parent, bg=BG, bd=0, highlightthickness=1,
+                           highlightcolor=ACCENT, highlightbackground=BORDER)
+        entry = tk.Entry(wrapper, font=(FONT, FONT_SIZE), bg=BG, fg=fg,
+                         insertbackground=TEXT, relief="flat", bd=0,
+                         highlightthickness=0)
+        entry.insert(0, value)
+        entry.pack(fill="x", padx=8, pady=6)
+        wrapper.pack(fill="x")
+        return entry, wrapper
+
+    def _make_button(self, parent, text, command, primary=False):
+        """Create a styled button."""
+        bg = ACCENT if primary else SURFACE_HOVER
+        btn = tk.Button(parent, text=text, font=(FONT, FONT_SIZE, "bold" if primary else "normal"),
+                        bg=bg, fg="white" if primary else TEXT,
+                        activebackground=ACCENT, activeforeground="white",
+                        relief="flat", bd=0, padx=20, pady=8, cursor="hand2",
+                        command=command)
+        return btn
+
     def show(self):
         self.win = tk.Tk()
-        self.win.title("Parley — Einstellungen")
-        self.win.geometry("420x440")
-        self.win.resizable(False, False)
-        self.win.configure(bg="#1e293b")
+        self.win.title("Parley")
+        self.win.geometry("480x620")
+        self.win.minsize(400, 500)
+        self.win.resizable(True, True)
+        self.win.configure(bg=BG)
 
-        style = ttk.Style()
-        style.theme_use("clam")
-        style.configure("TLabel", background="#1e293b", foreground="#f1f5f9", font=("Segoe UI", 10))
-        style.configure("TButton", font=("Segoe UI", 10))
-        style.configure("Header.TLabel", font=("Segoe UI", 13, "bold"), foreground="#f1f5f9", background="#1e293b")
+        # Window icon
+        icon_img = create_parley_icon(32)
+        self._icon_photo = ImageTk.PhotoImage(icon_img)
+        self.win.iconphoto(True, self._icon_photo)
 
-        pad = {"padx": 16, "pady": (8, 2)}
+        # --- Header ---
+        header = tk.Frame(self.win, bg=BG)
+        header.pack(fill="x", padx=24, pady=(24, 16))
 
-        # Header
-        ttk.Label(self.win, text="Parley Einstellungen", style="Header.TLabel").pack(pady=(16, 12))
+        # Icon + title side by side
+        icon_large = create_parley_icon(40)
+        self._header_icon = ImageTk.PhotoImage(icon_large)
+        tk.Label(header, image=self._header_icon, bg=BG).pack(side="left", padx=(0, 12))
 
-        # Server URL
-        ttk.Label(self.win, text="Server-URL:").pack(anchor="w", **pad)
-        self.server_entry = tk.Entry(self.win, font=("Segoe UI", 10), bg="#0f172a", fg="#f1f5f9",
-                                     insertbackground="#f1f5f9", relief="flat", bd=4)
-        self.server_entry.insert(0, self.cfg.get("server_url", ""))
-        self.server_entry.pack(fill="x", padx=16, pady=(0, 4))
+        title_frame = tk.Frame(header, bg=BG)
+        title_frame.pack(side="left")
+        tk.Label(title_frame, text="Parley", font=(FONT, 18, "bold"),
+                 bg=BG, fg=TEXT).pack(anchor="w")
+        tk.Label(title_frame, text="Einstellungen", font=(FONT, FONT_SMALL),
+                 bg=BG, fg=TEXT_MUTED).pack(anchor="w")
 
-        # Hotkey
-        ttk.Label(self.win, text="Hotkey:").pack(anchor="w", **pad)
-        hotkey_frame = tk.Frame(self.win, bg="#1e293b")
-        hotkey_frame.pack(fill="x", padx=16, pady=(0, 4))
+        # Scrollable content area
+        canvas = tk.Canvas(self.win, bg=BG, highlightthickness=0)
+        scrollbar = tk.Scrollbar(self.win, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
 
-        self.hotkey_label = tk.Label(hotkey_frame, text=self.cfg.get("hotkey", ""),
-                                     font=("Segoe UI", 10, "bold"), bg="#0f172a", fg="#3b82f6",
-                                     relief="flat", bd=4, anchor="w", padx=8)
+        content = tk.Frame(canvas, bg=BG)
+        content_window = canvas.create_window((0, 0), window=content, anchor="nw")
+
+        def _on_configure(event=None):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+            canvas.itemconfig(content_window, width=canvas.winfo_width())
+
+        content.bind("<Configure>", _on_configure)
+        canvas.bind("<Configure>", _on_configure)
+
+        # Mouse wheel scrolling
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+
+        # --- Server URL section ---
+        sec = self._make_section(content, "Server")
+        self.server_entry, _ = self._make_entry(sec, self.cfg.get("server_url", ""))
+
+        # --- Hotkeys section ---
+        sec = self._make_section(content, "Hotkeys")
+
+        # Hold hotkey
+        tk.Label(sec, text="Halten (gedrückt halten zum Sprechen):",
+                 font=(FONT, FONT_HINT), bg=SURFACE, fg=TEXT_MUTED).pack(anchor="w", pady=(0, 4))
+        hold_row = tk.Frame(sec, bg=SURFACE)
+        hold_row.pack(fill="x", pady=(0, 10))
+
+        self.hotkey_label = tk.Label(hold_row, text=self.cfg.get("hotkey_hold", ""),
+                                     font=(FONT, FONT_SIZE, "bold"), bg=BG, fg=ACCENT,
+                                     anchor="w", padx=10, pady=6,
+                                     highlightthickness=1, highlightbackground=BORDER)
         self.hotkey_label.pack(side="left", fill="x", expand=True)
 
-        self.record_btn = tk.Button(hotkey_frame, text="Aufnehmen", font=("Segoe UI", 9),
-                                    bg="#334155", fg="#f1f5f9", relief="flat", bd=0, padx=12, pady=2,
-                                    command=self._start_recording)
-        self.record_btn.pack(side="right", padx=(8, 0))
+        self.record_btn = self._make_button(hold_row, "Aufnehmen", self._start_recording)
+        self.record_btn.pack(side="right", padx=(10, 0))
 
-        # Mode
-        ttk.Label(self.win, text="Standard-Modus:").pack(anchor="w", **pad)
-        mode_frame = tk.Frame(self.win, bg="#1e293b")
-        mode_frame.pack(fill="x", padx=16, pady=(0, 4))
+        # Toggle hotkey
+        tk.Label(sec, text="Freihand (einmal drücken = Start, nochmal = Stop):",
+                 font=(FONT, FONT_HINT), bg=SURFACE, fg=TEXT_MUTED).pack(anchor="w", pady=(0, 4))
+        toggle_row = tk.Frame(sec, bg=SURFACE)
+        toggle_row.pack(fill="x", pady=(0, 10))
+
+        self.toggle_label = tk.Label(toggle_row, text=self.cfg.get("hotkey_toggle", ""),
+                                      font=(FONT, FONT_SIZE, "bold"), bg=BG, fg=ACCENT,
+                                      anchor="w", padx=10, pady=6,
+                                      highlightthickness=1, highlightbackground=BORDER)
+        self.toggle_label.pack(side="left", fill="x", expand=True)
+
+        self.toggle_btn = self._make_button(toggle_row, "Aufnehmen", self._start_toggle_recording)
+        self.toggle_btn.pack(side="right", padx=(10, 0))
+
+        # Stop key
+        tk.Label(sec, text="Stopp-Taste (alternative Taste zum Beenden im Freihand-Modus):",
+                 font=(FONT, FONT_HINT), bg=SURFACE, fg=TEXT_MUTED).pack(anchor="w", pady=(0, 4))
+        stop_row = tk.Frame(sec, bg=SURFACE)
+        stop_row.pack(fill="x")
+
+        self.stop_key_label = tk.Label(stop_row, text=self.cfg.get("stop_key", "<esc>"),
+                                       font=(FONT, FONT_SIZE, "bold"), bg=BG, fg=ACCENT,
+                                       anchor="w", padx=10, pady=6,
+                                       highlightthickness=1, highlightbackground=BORDER)
+        self.stop_key_label.pack(side="left", fill="x", expand=True)
+
+        self.stop_key_btn = self._make_button(stop_row, "Aufnehmen", self._start_stop_key_recording)
+        self.stop_key_btn.pack(side="right", padx=(10, 0))
+
+        # --- Mode section ---
+        sec = self._make_section(content, "Standard-Modus")
 
         self.mode_var = tk.StringVar(value=self.cfg.get("mode", "raw"))
+        mode_row = tk.Frame(sec, bg=SURFACE)
+        mode_row.pack(fill="x")
         for val, label in [("raw", "Raw"), ("cleanup", "Cleanup"), ("rephrase", "Reformulieren")]:
-            tk.Radiobutton(mode_frame, text=label, variable=self.mode_var, value=val,
-                           bg="#1e293b", fg="#f1f5f9", selectcolor="#334155",
-                           activebackground="#1e293b", activeforeground="#f1f5f9",
-                           font=("Segoe UI", 10)).pack(side="left", padx=(0, 16))
+            tk.Radiobutton(mode_row, text=label, variable=self.mode_var, value=val,
+                           bg=SURFACE, fg=TEXT, selectcolor=SURFACE_HOVER,
+                           activebackground=SURFACE, activeforeground=TEXT,
+                           font=(FONT, FONT_SIZE), indicatoron=True,
+                           ).pack(side="left", padx=(0, 20))
 
-        # Auto-paste checkbox
+        # --- Options section ---
+        sec = self._make_section(content, "Optionen")
+
         self.autopaste_var = tk.BooleanVar(value=self.cfg.get("auto_paste", True))
-        tk.Checkbutton(self.win, text="Auto-Paste (Ctrl+V nach Transkription)", variable=self.autopaste_var,
-                       bg="#1e293b", fg="#f1f5f9", selectcolor="#334155",
-                       activebackground="#1e293b", activeforeground="#f1f5f9",
-                       font=("Segoe UI", 10)).pack(anchor="w", padx=16, pady=(8, 4))
+        tk.Checkbutton(sec, text="Auto-Paste (Ctrl+V nach Transkription)",
+                       variable=self.autopaste_var,
+                       bg=SURFACE, fg=TEXT, selectcolor=SURFACE_HOVER,
+                       activebackground=SURFACE, activeforeground=TEXT,
+                       font=(FONT, FONT_SIZE)).pack(anchor="w", pady=(0, 6))
 
         # Send mode
-        ttk.Label(self.win, text="Nach Transkription senden:").pack(anchor="w", **pad)
-        send_frame = tk.Frame(self.win, bg="#1e293b")
-        send_frame.pack(fill="x", padx=16, pady=(0, 4))
+        tk.Label(sec, text="Nach Transkription senden:", font=(FONT, FONT_SMALL, "bold"),
+                 bg=SURFACE, fg=TEXT_MUTED).pack(anchor="w", pady=(4, 6))
 
         self.send_var = tk.StringVar(value=self.cfg.get("send_mode", "off"))
         for val, label in [("off", "Aus"), ("auto", "Immer (Enter)"), ("voice", "Per Sprachbefehl")]:
-            tk.Radiobutton(send_frame, text=label, variable=self.send_var, value=val,
-                           bg="#1e293b", fg="#f1f5f9", selectcolor="#334155",
-                           activebackground="#1e293b", activeforeground="#f1f5f9",
-                           font=("Segoe UI", 10)).pack(side="left", padx=(0, 12))
+            tk.Radiobutton(sec, text=label, variable=self.send_var, value=val,
+                           bg=SURFACE, fg=TEXT, selectcolor=SURFACE_HOVER,
+                           activebackground=SURFACE, activeforeground=TEXT,
+                           font=(FONT, FONT_SIZE)).pack(anchor="w", padx=(4, 0))
 
-        send_hint = tk.Label(self.win, text='Bei "Per Sprachbefehl" hoert Parley 10s auf "Senden"',
-                             font=("Segoe UI", 8), bg="#1e293b", fg="#94a3b8")
-        send_hint.pack(anchor="w", padx=16, pady=(0, 4))
+        tk.Label(sec, text='Sprachbefehl: Parley hoert 10s auf "Senden"',
+                 font=(FONT, FONT_HINT), bg=SURFACE, fg=TEXT_MUTED).pack(anchor="w", pady=(4, 0))
 
-        # Save button
-        save_btn = tk.Button(self.win, text="Speichern", font=("Segoe UI", 11, "bold"),
-                             bg="#3b82f6", fg="white", relief="flat", bd=0, padx=24, pady=6,
-                             command=self._save)
-        save_btn.pack(pady=(16, 12))
+        # --- Save button ---
+        btn_frame = tk.Frame(content, bg=BG)
+        btn_frame.pack(fill="x", padx=24, pady=(8, 24))
+
+        save_btn = self._make_button(btn_frame, "Speichern", self._save, primary=True)
+        save_btn.pack(fill="x")
 
         self.win.mainloop()
 
@@ -147,8 +280,26 @@ class SettingsWindow:
         self.recorder.start()
 
     def _hotkey_recorded(self, hotkey: str):
-        self.cfg["hotkey"] = hotkey
+        self.cfg["hotkey_hold"] = hotkey
         self.record_btn.config(state="normal", text="Aufnehmen")
+
+    def _start_toggle_recording(self):
+        self.toggle_btn.config(state="disabled", text="...")
+        self.recorder = HotkeyRecorder(self.toggle_label, self._toggle_recorded)
+        self.recorder.start()
+
+    def _toggle_recorded(self, hotkey: str):
+        self.cfg["hotkey_toggle"] = hotkey
+        self.toggle_btn.config(state="normal", text="Aufnehmen")
+
+    def _start_stop_key_recording(self):
+        self.stop_key_btn.config(state="disabled", text="...")
+        self.recorder = HotkeyRecorder(self.stop_key_label, self._stop_key_recorded)
+        self.recorder.start()
+
+    def _stop_key_recorded(self, hotkey: str):
+        self.cfg["stop_key"] = hotkey
+        self.stop_key_btn.config(state="normal", text="Aufnehmen")
 
     def _save(self):
         self.cfg["server_url"] = self.server_entry.get().strip()

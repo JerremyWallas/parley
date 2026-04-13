@@ -1,11 +1,21 @@
-"""Transparent overlay window showing recording/processing state."""
+"""Transparent overlay window showing recording/processing state — centered above taskbar."""
+import ctypes
 import tkinter as tk
 import threading
 import math
 
+# Enable DPI awareness for sharp rendering on high-DPI displays
+try:
+    ctypes.windll.shcore.SetProcessDpiAwareness(2)  # Per-monitor DPI aware
+except Exception:
+    try:
+        ctypes.windll.user32.SetProcessDPIAware()  # Fallback
+    except Exception:
+        pass
+
 
 class RecordingOverlay:
-    """Small floating circle overlay that shows recording state."""
+    """Floating overlay that shows recording state, centered at bottom of screen."""
 
     def __init__(self):
         self._root = None
@@ -14,7 +24,6 @@ class RecordingOverlay:
         self._running = False
         self._state = "hidden"  # hidden, recording, processing, listening
         self._animation_step = 0
-        self._pulse_growing = True
 
     def show(self, state: str = "recording"):
         """Show overlay with given state. Thread-safe."""
@@ -25,7 +34,6 @@ class RecordingOverlay:
         elif not self._running:
             self._thread = threading.Thread(target=self._run, daemon=True)
             self._thread.start()
-            # Wait a bit for window to initialize
             threading.Event().wait(0.2)
 
     def hide(self):
@@ -49,8 +57,15 @@ class RecordingOverlay:
         self._root.attributes("-transparentcolor", "#010101")
         self._root.configure(bg="#010101")
 
-        size = 80
-        self._root.geometry(f"{size}x{size}+20+20")
+        size = 100
+
+        # Position: centered horizontally, above taskbar (~60px from bottom)
+        screen_w = self._root.winfo_screenwidth()
+        screen_h = self._root.winfo_screenheight()
+        x = (screen_w - size) // 2
+        y = screen_h - size - 60
+
+        self._root.geometry(f"{size}x{size}+{x}+{y}")
 
         self._canvas = tk.Canvas(
             self._root, width=size, height=size,
@@ -71,9 +86,8 @@ class RecordingOverlay:
             return
 
         self._canvas.delete("all")
-        cx, cy = 40, 40
+        cx, cy = 50, 50
 
-        # Pulse animation
         self._animation_step += 1
         pulse = math.sin(self._animation_step * 0.15) * 0.15 + 1.0
 
@@ -85,50 +99,70 @@ class RecordingOverlay:
         color, light_color = colors.get(self._state, ("#3b82f6", "#60a5fa"))
 
         # Outer glow ring (pulsing)
-        glow_r = int(30 * pulse)
+        glow_r = int(38 * pulse)
         self._canvas.create_oval(
             cx - glow_r, cy - glow_r, cx + glow_r, cy + glow_r,
             fill="", outline=light_color, width=2,
         )
 
         # Inner solid circle
-        r = 20
+        r = 28
         self._canvas.create_oval(
             cx - r, cy - r, cx + r, cy + r,
             fill=color, outline="",
         )
 
-        # Icon in center
+        # Speech bubble icon (matching the Parley brand)
+        self._draw_speech_icon(cx, cy)
+
+        # State-specific animation on top
         if self._state == "recording":
-            # Mic shape
-            self._canvas.create_rectangle(
-                cx - 4, cy - 10, cx + 4, cy + 2,
-                fill="white", outline="",
-            )
-            self._canvas.create_arc(
-                cx - 8, cy - 4, cx + 8, cy + 8,
-                start=0, extent=-180,
-                outline="white", width=2, style="arc",
-            )
-            self._canvas.create_line(cx, cy + 8, cx, cy + 12, fill="white", width=2)
+            # Pulsing sound waves
+            for i in range(3):
+                wave_r = int((18 + i * 6) * pulse)
+                alpha_width = max(1, 3 - i)
+                self._canvas.create_arc(
+                    cx + 8 - wave_r, cy - wave_r,
+                    cx + 8 + wave_r, cy + wave_r,
+                    start=-30, extent=60,
+                    outline="white", width=alpha_width, style="arc",
+                )
         elif self._state == "processing":
-            # Spinning dots
+            # Spinning dots around the circle
             for i in range(3):
                 angle = (self._animation_step * 0.2 + i * 2.1)
-                dx = math.cos(angle) * 8
-                dy = math.sin(angle) * 8
+                dx = math.cos(angle) * 22
+                dy = math.sin(angle) * 22
                 self._canvas.create_oval(
-                    cx + dx - 2, cy + dy - 2, cx + dx + 2, cy + dy + 2,
+                    cx + dx - 3, cy + dy - 3, cx + dx + 3, cy + dy + 3,
                     fill="white", outline="",
                 )
-        elif self._state == "listening":
-            # Ear/listen icon (simple)
-            self._canvas.create_text(cx, cy, text="👂", font=("Segoe UI Emoji", 14))
 
         self._root.after(50, self._animate)
 
+    def _draw_speech_icon(self, cx, cy):
+        """Draw a small speech bubble in the center."""
+        # Bubble body
+        bx, by = cx - 8, cy - 8
+        self._canvas.create_rectangle(
+            bx, by, bx + 16, by + 12,
+            fill="white", outline="",
+        )
+        # Bubble tail
+        self._canvas.create_polygon(
+            bx + 2, by + 12,
+            bx - 2, by + 18,
+            bx + 8, by + 12,
+            fill="white", outline="",
+        )
+        # Three dots inside
+        for dx in [-4, 0, 4]:
+            self._canvas.create_oval(
+                cx + dx - 1, cy - 3, cx + dx + 1, cy - 1,
+                fill="#333333", outline="",
+            )
+
     def _update_visuals(self):
-        """Force a visual update."""
         pass  # Animation loop handles it
 
     def destroy(self):
