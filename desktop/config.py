@@ -9,6 +9,8 @@ DEFAULTS = {
     "mode": "raw",
     "auto_paste": True,
     "autostart": False,
+    "send_mode": "off",  # "off", "auto", "voice"
+    "send_listen_seconds": 10,
 }
 
 

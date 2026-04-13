@@ -19,3 +19,10 @@ def insert_text(text: str, auto_paste: bool = True):
         keyboard.press("v")
         keyboard.release("v")
         keyboard.release(Key.ctrl)
+
+
+def press_enter():
+    """Simulate pressing Enter to send a message."""
+    time.sleep(0.15)
+    keyboard.press(Key.enter)
+    keyboard.release(Key.enter)

@@ -61,7 +61,7 @@ class SettingsWindow:
     def show(self):
         self.win = tk.Tk()
         self.win.title("Parley — Einstellungen")
-        self.win.geometry("420x340")
+        self.win.geometry("420x440")
         self.win.resizable(False, False)
         self.win.configure(bg="#1e293b")
 
@@ -117,6 +117,22 @@ class SettingsWindow:
                        activebackground="#1e293b", activeforeground="#f1f5f9",
                        font=("Segoe UI", 10)).pack(anchor="w", padx=16, pady=(8, 4))
 
+        # Send mode
+        ttk.Label(self.win, text="Nach Transkription senden:").pack(anchor="w", **pad)
+        send_frame = tk.Frame(self.win, bg="#1e293b")
+        send_frame.pack(fill="x", padx=16, pady=(0, 4))
+
+        self.send_var = tk.StringVar(value=self.cfg.get("send_mode", "off"))
+        for val, label in [("off", "Aus"), ("auto", "Immer (Enter)"), ("voice", "Per Sprachbefehl")]:
+            tk.Radiobutton(send_frame, text=label, variable=self.send_var, value=val,
+                           bg="#1e293b", fg="#f1f5f9", selectcolor="#334155",
+                           activebackground="#1e293b", activeforeground="#f1f5f9",
+                           font=("Segoe UI", 10)).pack(side="left", padx=(0, 12))
+
+        send_hint = tk.Label(self.win, text='Bei "Per Sprachbefehl" hoert Parley 10s auf "Senden"',
+                             font=("Segoe UI", 8), bg="#1e293b", fg="#94a3b8")
+        send_hint.pack(anchor="w", padx=16, pady=(0, 4))
+
         # Save button
         save_btn = tk.Button(self.win, text="Speichern", font=("Segoe UI", 11, "bold"),
                              bg="#3b82f6", fg="white", relief="flat", bd=0, padx=24, pady=6,
@@ -138,6 +154,7 @@ class SettingsWindow:
         self.cfg["server_url"] = self.server_entry.get().strip()
         self.cfg["mode"] = self.mode_var.get()
         self.cfg["auto_paste"] = self.autopaste_var.get()
+        self.cfg["send_mode"] = self.send_var.get()
         config.save(self.cfg)
         self.on_save(self.cfg)
         self.win.destroy()

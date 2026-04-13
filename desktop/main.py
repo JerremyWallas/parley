@@ -77,11 +77,47 @@ def process_audio(audio_bytes: bytes):
         if text:
             text_inserter.insert_text(text, auto_paste=cfg.get("auto_paste", True))
             logger.info(f"Inserted: {text[:80]}...")
+            handle_send_mode()
         else:
             logger.warning("Empty transcription result")
     except Exception as e:
         logger.error(f"Transcription failed: {e}")
     finally:
+        update_icon()
+
+
+def handle_send_mode():
+    """Handle auto-send or voice-command send after text insertion."""
+    send_mode = cfg.get("send_mode", "off")
+
+    if send_mode == "auto":
+        logger.info("Auto-send: pressing Enter")
+        text_inserter.press_enter()
+
+    elif send_mode == "voice":
+        listen_seconds = cfg.get("send_listen_seconds", 10)
+        logger.info(f"Voice-send: listening for {listen_seconds}s for 'senden' command...")
+        update_icon(listening=True)
+
+        listen_rec = recorder.AudioRecorder()
+        listen_audio = listen_rec.record_for(listen_seconds)
+
+        if listen_audio:
+            try:
+                # Transcribe with raw mode — we just need the words
+                result = api_client.transcribe(cfg["server_url"], listen_audio, "raw")
+                heard = (result.get("raw_text") or "").lower().strip()
+                logger.info(f"Voice-send heard: '{heard}'")
+
+                send_triggers = ["senden", "sende", "send", "abschicken", "absenden", "enter"]
+                if any(trigger in heard for trigger in send_triggers):
+                    logger.info("Send command detected — pressing Enter")
+                    text_inserter.press_enter()
+                else:
+                    logger.info("No send command detected")
+            except Exception as e:
+                logger.error(f"Voice-send transcription failed: {e}")
+
         update_icon()
 
 
@@ -101,16 +137,18 @@ def create_icon_image(color: str = "#3b82f6") -> Image.Image:
     return img
 
 
-def update_icon(recording: bool = False, processing: bool = False):
+def update_icon(recording: bool = False, processing: bool = False, listening: bool = False):
     global tray_icon
     if tray_icon is None:
         return
     if recording:
-        tray_icon.icon = create_icon_image("#ef4444")
+        tray_icon.icon = create_icon_image("#ef4444")  # red
     elif processing:
-        tray_icon.icon = create_icon_image("#f59e0b")
+        tray_icon.icon = create_icon_image("#f59e0b")  # orange
+    elif listening:
+        tray_icon.icon = create_icon_image("#22c55e")  # green — waiting for "senden"
     else:
-        tray_icon.icon = create_icon_image("#3b82f6")
+        tray_icon.icon = create_icon_image("#3b82f6")  # blue
 
 
 def set_mode(mode: str):

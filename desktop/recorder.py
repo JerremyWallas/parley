@@ -55,6 +55,12 @@ class AudioRecorder:
         if self._recording:
             self._frames.append(indata.copy())
 
+    def record_for(self, seconds: float) -> bytes:
+        """Record for a fixed duration and return audio bytes."""
+        self.start()
+        threading.Event().wait(seconds)
+        return self.stop()
+
     @property
     def is_recording(self) -> bool:
         return self._recording
