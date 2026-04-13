@@ -20,7 +20,7 @@ class AudioRecorder:
         self._chunk_size = 0  # frames per chunk (0 = no chunking)
 
     def start(self, on_chunk=None, chunk_interval_ms: int = 500):
-        """Start recording. If on_chunk is provided, calls it with WAV bytes every chunk_interval_ms."""
+        """Start recording. If on_chunk is provided, calls it with raw PCM bytes every chunk_interval_ms."""
         with self._lock:
             self._frames = []
             self._chunk_frames = []
@@ -44,10 +44,10 @@ class AudioRecorder:
                 self._stream.close()
                 self._stream = None
 
-            # Send any remaining chunk frames
+            # Send any remaining chunk frames as raw PCM
             if self._on_chunk and self._chunk_frames:
-                wav = self._frames_to_wav(self._chunk_frames)
-                self._on_chunk(wav)
+                pcm = np.concatenate(self._chunk_frames, axis=0).tobytes()
+                self._on_chunk(pcm)
                 self._chunk_frames = []
 
             self._on_chunk = None
@@ -63,14 +63,14 @@ class AudioRecorder:
         frame = indata.copy()
         self._frames.append(frame)
 
-        # Chunked streaming
+        # Chunked streaming — send raw PCM bytes (no WAV header)
         if self._on_chunk and self._chunk_size > 0:
             self._chunk_frames.append(frame)
             total_samples = sum(f.shape[0] for f in self._chunk_frames)
             if total_samples >= self._chunk_size:
-                wav = self._frames_to_wav(self._chunk_frames)
+                pcm = np.concatenate(self._chunk_frames, axis=0).tobytes()
                 self._chunk_frames = []
-                self._on_chunk(wav)
+                self._on_chunk(pcm)
 
     def _frames_to_wav(self, frames: list[np.ndarray]) -> bytes:
         audio_data = np.concatenate(frames, axis=0)

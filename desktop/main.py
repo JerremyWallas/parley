@@ -101,6 +101,7 @@ def _on_llm_token(token: str):
 def _on_done(raw_text: str, processed_text: str):
     """Called when transcription + LLM processing is complete."""
     global _streaming_session
+    _streaming_session = None
     text = processed_text or raw_text
 
     if text:
@@ -111,8 +112,6 @@ def _on_done(raw_text: str, processed_text: str):
     else:
         logger.warning("Empty transcription result")
         update_icon()
-
-    _streaming_session = None
 
 
 def _on_error(message: str):
@@ -392,5 +391,25 @@ def main():
     listener.stop()
 
 
+def ensure_single_instance():
+    """Ensure only one instance of Parley is running using a lock file."""
+    import msvcrt
+    lock_path = config.CONFIG_FILE.parent / "parley.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        # Open lock file and try exclusive lock
+        lock_file = open(lock_path, "w")
+        msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+        lock_file.write(str(os.getpid()))
+        lock_file.flush()
+        return lock_file  # Keep reference alive so lock persists
+    except (OSError, IOError):
+        logger.error("Parley is already running. Exiting.")
+        sys.exit(0)
+
+
 if __name__ == "__main__":
+    import os
+    _lock = ensure_single_instance()
     main()

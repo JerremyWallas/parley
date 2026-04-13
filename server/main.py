@@ -408,8 +408,24 @@ async def ws_transcribe(ws: WebSocket):
                     await ws.send_json({"type": "error", "message": "No audio received"})
                     continue
 
-                audio_bytes = bytes(audio_buffer)
+                raw_audio = bytes(audio_buffer)
                 audio_buffer.clear()
+
+                # If the audio doesn't start with a WAV/RIFF header, it's raw PCM
+                # from the desktop client — wrap it in a WAV container
+                if raw_audio[:4] != b"RIFF":
+                    import io as _io
+                    import wave as _wave
+                    sample_rate = data.get("sample_rate", 16000)
+                    buf = _io.BytesIO()
+                    with _wave.open(buf, "wb") as wf:
+                        wf.setnchannels(1)
+                        wf.setsampwidth(2)
+                        wf.setframerate(sample_rate)
+                        wf.writeframes(raw_audio)
+                    audio_bytes = buf.getvalue()
+                else:
+                    audio_bytes = raw_audio
 
                 # --- Phase 1: Stream Whisper segments ---
                 initial_prompt = personalization.build_initial_prompt()
