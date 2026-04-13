@@ -37,22 +37,22 @@ services:
       - ollama
     volumes:
       - whisper_models:/models
-      - ./data:/app/data
+      - parley_data:/app/data
 
   # Nginx Reverse Proxy — HTTPS + static files (PWA)
   nginx:
-    image: nginx:alpine
+    image: ghcr.io/jerremywallas/parley-nginx:latest
     restart: unless-stopped
     ports:
       - "${HTTP_PORT:-7800}:80"
       - "${HTTPS_PORT:-7443}:443"
     volumes:
-      - ./web:/usr/share/nginx/html:ro
-      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
-      - ./nginx/certs:/etc/nginx/certs:ro
+      - parley_certs:/etc/nginx/certs
     depends_on:
       - parley
 
 volumes:
   ollama_data:
   whisper_models:
+  parley_data:
+  parley_certs:

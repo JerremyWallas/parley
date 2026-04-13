@@ -1,12 +1,16 @@
 # PyInstaller spec file for Parley Desktop Client
-# Build with: pyinstaller build.spec
+# Build with: cd desktop && pyinstaller build.spec
 
 a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
     datas=[],
-    hiddenimports=['pynput.keyboard._win32', 'pynput.mouse._win32'],
+    hiddenimports=[
+        'pynput.keyboard._win32',
+        'pynput.mouse._win32',
+        'settings_ui',
+    ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

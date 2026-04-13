@@ -3,3 +3,10 @@ services:
   parley:
     build: ./server
     image: parley:dev
+  nginx:
+    build:
+      context: .
+      dockerfile: ./nginx/Dockerfile
+    image: parley-nginx:dev
+    volumes:
+      - ./nginx/certs:/etc/nginx/certs

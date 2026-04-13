@@ -10,6 +10,7 @@ import config
 import recorder
 import api_client
 import text_inserter
+import settings_ui
 
 # Suppress SSL warnings for self-signed certs
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -132,6 +133,20 @@ def toggle_auto_paste(icon, item):
     logger.info(f"Auto-paste: {cfg['auto_paste']}")
 
 
+def open_settings(icon, item):
+    """Open settings window and apply changes."""
+    def on_save(new_cfg):
+        global cfg, hotkey_parts
+        cfg = new_cfg
+        hotkey_parts = parse_hotkey(cfg["hotkey"])
+        logger.info(f"Settings updated — Hotkey: {cfg['hotkey']}, Server: {cfg['server_url']}, Mode: {cfg['mode']}")
+        # Rebuild tray menu to reflect new settings
+        if tray_icon:
+            tray_icon.menu = build_menu()
+
+    threading.Thread(target=settings_ui.open_settings, args=(cfg, on_save), daemon=True).start()
+
+
 def quit_app(icon, item):
     icon.stop()
 
@@ -149,6 +164,7 @@ def build_menu():
         pystray.MenuItem(f"Hotkey: {cfg['hotkey']}", lambda *a: None, enabled=False),
         pystray.MenuItem(f"Server: {cfg['server_url']}", lambda *a: None, enabled=False),
         pystray.Menu.SEPARATOR,
+        pystray.MenuItem("Einstellungen...", open_settings),
         pystray.MenuItem("Beenden", quit_app),
     )
 
