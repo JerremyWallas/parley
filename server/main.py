@@ -159,6 +159,38 @@ async def remove_word(data: dict):
     return {"words": personalization.get_glossary()}
 
 
+# --- Prompts ---
+
+@app.get("/api/prompts")
+async def get_prompts():
+    """Get current prompts (custom or default) for each mode."""
+    prefs = personalization.get_preferences()
+    custom = prefs.get("custom_prompts", {})
+    return {
+        "cleanup": custom.get("cleanup", ""),
+        "rephrase": custom.get("rephrase", ""),
+        "cleanup_default": cleanup.DEFAULT_PROMPTS["cleanup"],
+        "rephrase_default": cleanup.DEFAULT_PROMPTS["rephrase"],
+    }
+
+
+@app.put("/api/prompts")
+async def set_prompts(data: dict):
+    """Save custom prompts. Empty string = use default."""
+    prefs = personalization.get_preferences()
+    custom = prefs.get("custom_prompts", {})
+    for mode in ("cleanup", "rephrase"):
+        if mode in data:
+            val = data[mode].strip()
+            if val:
+                custom[mode] = val
+            elif mode in custom:
+                del custom[mode]
+    prefs["custom_prompts"] = custom
+    personalization.save_preferences(prefs)
+    return {"status": "ok"}
+
+
 # --- Preferences ---
 
 @app.get("/api/preferences")

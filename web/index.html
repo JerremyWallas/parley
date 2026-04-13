@@ -26,6 +26,17 @@
       <button class="mode-btn" data-mode="rephrase">Reformulieren</button>
     </div>
 
+    <!-- Prompt editor (visible for cleanup/rephrase) -->
+    <div id="promptEditor" class="hidden">
+      <div class="prompt-header">
+        <span class="prompt-label">Anweisung</span>
+        <button id="promptResetBtn" class="text-btn" title="Auf Standard zuruecksetzen">Zuruecksetzen</button>
+      </div>
+      <textarea id="promptText" rows="3" placeholder="Eigene Anweisung fuer die Textverarbeitung..."></textarea>
+      <button id="promptSaveBtn" class="secondary-btn prompt-save-btn">Speichern</button>
+      <span id="promptStatus"></span>
+    </div>
+
     <!-- Record button -->
     <div id="recordArea">
       <div id="visualizer">

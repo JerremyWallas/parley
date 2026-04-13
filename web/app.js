@@ -52,19 +52,79 @@ async function apiGet(path) {
   return resp.json();
 }
 
-// --- Mode selector ---
+// --- Mode selector + prompt editor ---
+const promptEditor = document.getElementById("promptEditor");
+const promptText = document.getElementById("promptText");
+const promptSaveBtn = document.getElementById("promptSaveBtn");
+const promptResetBtn = document.getElementById("promptResetBtn");
+const promptStatus = document.getElementById("promptStatus");
+let promptDefaults = {};
+let promptCustom = {};
+
 function setMode(mode) {
   currentMode = mode;
   localStorage.setItem("stt-mode", mode);
   modeButtons.forEach(btn => {
     btn.classList.toggle("active", btn.dataset.mode === mode);
   });
+
+  // Show/hide prompt editor
+  if (mode === "cleanup" || mode === "rephrase") {
+    promptEditor.classList.remove("hidden");
+    promptText.value = promptCustom[mode] || promptDefaults[mode] || "";
+    promptStatus.textContent = "";
+  } else {
+    promptEditor.classList.add("hidden");
+  }
 }
+
+async function loadPrompts() {
+  try {
+    const data = await apiGet("/api/prompts");
+    promptDefaults = { cleanup: data.cleanup_default, rephrase: data.rephrase_default };
+    promptCustom = { cleanup: data.cleanup || "", rephrase: data.rephrase || "" };
+    // Update textarea if a mode with prompt is active
+    if (currentMode === "cleanup" || currentMode === "rephrase") {
+      promptText.value = promptCustom[currentMode] || promptDefaults[currentMode] || "";
+    }
+  } catch { /* ignore if server unreachable */ }
+}
+
+promptSaveBtn.addEventListener("click", async () => {
+  const val = promptText.value.trim();
+  promptCustom[currentMode] = val;
+  try {
+    await fetch(apiUrl("/api/prompts"), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ [currentMode]: val }),
+    });
+    promptStatus.textContent = "Gespeichert!";
+    setTimeout(() => { promptStatus.textContent = ""; }, 2000);
+  } catch (err) {
+    promptStatus.textContent = "Fehler: " + err.message;
+  }
+});
+
+promptResetBtn.addEventListener("click", async () => {
+  promptText.value = promptDefaults[currentMode] || "";
+  promptCustom[currentMode] = "";
+  try {
+    await fetch(apiUrl("/api/prompts"), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ [currentMode]: "" }),
+    });
+    promptStatus.textContent = "Zurueckgesetzt!";
+    setTimeout(() => { promptStatus.textContent = ""; }, 2000);
+  } catch { /* ignore */ }
+});
 
 modeButtons.forEach(btn => {
   btn.addEventListener("click", () => setMode(btn.dataset.mode));
 });
 setMode(currentMode);
+loadPrompts();
 
 // --- WebSocket streaming ---
 function getOpusMimeType() {

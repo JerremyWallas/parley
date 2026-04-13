@@ -12,7 +12,7 @@ def _get_active_model() -> str:
     prefs = personalization.get_preferences()
     return prefs.get("ollama_model", OLLAMA_MODEL)
 
-PROMPTS = {
+DEFAULT_PROMPTS = {
     "cleanup": (
         "Du bist ein Textbereinigungsassistent. "
         "Bereinige den folgenden transkribierten Text: entferne Füllwörter (ähm, also, halt, sozusagen, quasi), "
@@ -35,8 +35,15 @@ PROMPTS = {
 }
 
 
+def _get_prompt(mode: str) -> str:
+    """Get the prompt for a mode, using custom prompt from preferences if set."""
+    prefs = personalization.get_preferences()
+    custom_prompts = prefs.get("custom_prompts", {})
+    return custom_prompts.get(mode) or DEFAULT_PROMPTS[mode]
+
+
 def _build_prompt(mode: str, raw_text: str, few_shot_examples: list[dict] | None = None) -> str:
-    base = PROMPTS[mode]
+    base = _get_prompt(mode)
 
     if few_shot_examples:
         base += "Hier sind Beispiele, wie der Nutzer Texte formuliert haben möchte:\n"
