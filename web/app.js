@@ -477,6 +477,7 @@ settingsModal.addEventListener("click", (e) => {
 async function loadSettings() {
   document.getElementById("serverUrl").value = serverUrl;
 
+  checkServer();
   loadModels();
 
   try {
