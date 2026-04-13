@@ -10,6 +10,8 @@ a = Analysis(
         'pynput.keyboard._win32',
         'pynput.mouse._win32',
         'settings_ui',
+        'overlay',
+        'urllib3',
     ],
     hookspath=[],
     hooksconfig={},

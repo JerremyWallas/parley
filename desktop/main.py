@@ -11,6 +11,7 @@ import recorder
 import api_client
 import text_inserter
 import settings_ui
+from overlay import RecordingOverlay
 
 # Suppress SSL warnings for self-signed certs
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -24,6 +25,7 @@ audio_rec = recorder.AudioRecorder()
 hotkey_parts = []
 pressed_keys = set()
 tray_icon = None
+overlay = RecordingOverlay()
 
 
 def parse_hotkey(hotkey_str: str) -> list[str]:
@@ -249,12 +251,16 @@ def update_icon(recording: bool = False, processing: bool = False, listening: bo
         return
     if recording:
         tray_icon.icon = create_icon_image("#ef4444")  # red
+        overlay.show("recording")
     elif processing:
         tray_icon.icon = create_icon_image("#f59e0b")  # orange
+        overlay.update_state("processing")
     elif listening:
         tray_icon.icon = create_icon_image("#22c55e")  # green — waiting for "senden"
+        overlay.update_state("listening")
     else:
         tray_icon.icon = create_icon_image("#3b82f6")  # blue
+        overlay.hide()
 
 
 def set_mode(mode: str):
