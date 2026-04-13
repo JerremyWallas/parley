@@ -12,6 +12,7 @@ a = Analysis(
         'settings_ui',
         'overlay',
         'urllib3',
+        'websocket',
     ],
     hookspath=[],
     hooksconfig={},

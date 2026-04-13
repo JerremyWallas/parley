@@ -26,6 +26,7 @@ hotkey_parts = []
 pressed_keys = set()
 tray_icon = None
 overlay = RecordingOverlay()
+_streaming_session = None
 
 
 def parse_hotkey(hotkey_str: str) -> list[str]:
@@ -43,47 +44,89 @@ def key_to_str(key) -> str:
 
 
 def on_key_press(key):
+    global _streaming_session
     key_str = key_to_str(key)
     pressed_keys.add(key_str)
 
     # Check if all hotkey parts are pressed
     if all(part in pressed_keys for part in hotkey_parts):
         if not audio_rec.is_recording:
-            logger.info("Hotkey pressed — starting recording")
+            logger.info("Hotkey pressed — starting streaming recording")
             update_icon(recording=True)
-            audio_rec.start()
+
+            # Open WebSocket session and start streaming audio
+            _streaming_session = api_client.StreamingSession(
+                server_url=cfg["server_url"],
+                mode=cfg["mode"],
+                on_segment=_on_segment,
+                on_llm_token=_on_llm_token,
+                on_done=_on_done,
+                on_error=_on_error,
+            )
+            _streaming_session.start()
+
+            # Start recording with chunk callback that streams to server
+            audio_rec.start(
+                on_chunk=lambda wav_bytes: _streaming_session.send_audio(wav_bytes),
+                chunk_interval_ms=500,
+            )
 
 
 def on_key_release(key):
+    global _streaming_session
     key_str = key_to_str(key)
 
     if audio_rec.is_recording and key_str in hotkey_parts:
-        logger.info("Hotkey released — stopping recording")
-        update_icon(recording=False)
-        audio_bytes = audio_rec.stop()
+        logger.info("Hotkey released — stopping recording, waiting for results")
+        audio_rec.stop()
+        update_icon(processing=True)
 
-        if audio_bytes:
-            # Process in background thread
-            threading.Thread(target=process_audio, args=(audio_bytes,), daemon=True).start()
+        # Tell server we're done recording
+        if _streaming_session:
+            _streaming_session.finish()
 
     pressed_keys.discard(key_str)
 
 
-def process_audio(audio_bytes: bytes):
-    """Send audio to server and insert result."""
+def _on_segment(text: str):
+    """Called when a Whisper segment arrives during transcription."""
+    logger.info(f"Segment: {text}")
+
+
+def _on_llm_token(token: str):
+    """Called for each LLM token during streaming."""
+    pass  # Desktop doesn't show streaming text, just waits for final
+
+
+def _on_done(raw_text: str, processed_text: str):
+    """Called when transcription + LLM processing is complete."""
+    global _streaming_session
+    text = processed_text or raw_text
+
+    if text:
+        text_inserter.insert_text(text, auto_paste=cfg.get("auto_paste", True))
+        logger.info(f"Inserted: {text[:80]}...")
+        update_icon()
+        handle_send_mode()
+    else:
+        logger.warning("Empty transcription result")
+        update_icon()
+
+    _streaming_session = None
+
+
+def _on_error(message: str):
+    """Called on WebSocket or server error — fall back to REST."""
+    global _streaming_session
+    logger.warning(f"Streaming failed ({message}), trying REST fallback...")
+    _streaming_session = None
+
+    # Fallback: use the complete recorded audio via REST
     update_icon(processing=True)
     try:
-        result = api_client.transcribe(cfg["server_url"], audio_bytes, cfg["mode"])
-        text = result.get("processed_text") or result.get("raw_text", "")
-
-        if text:
-            text_inserter.insert_text(text, auto_paste=cfg.get("auto_paste", True))
-            logger.info(f"Inserted: {text[:80]}...")
-            handle_send_mode()
-        else:
-            logger.warning("Empty transcription result")
-    except Exception as e:
-        logger.error(f"Transcription failed: {e}")
+        # Re-record is not possible, but audio_rec.stop() already returned the full audio
+        # The frames are gone, so just report the error
+        logger.error("REST fallback not possible — audio already consumed by stream")
     finally:
         update_icon()
 

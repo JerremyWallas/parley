@@ -6,7 +6,7 @@ import numpy as np
 
 
 class AudioRecorder:
-    """Records audio from the default microphone."""
+    """Records audio from the default microphone with optional chunk streaming."""
 
     def __init__(self, sample_rate: int = 16000, channels: int = 1):
         self.sample_rate = sample_rate
@@ -15,11 +15,19 @@ class AudioRecorder:
         self._stream = None
         self._recording = False
         self._lock = threading.Lock()
+        self._on_chunk = None
+        self._chunk_frames: list[np.ndarray] = []
+        self._chunk_size = 0  # frames per chunk (0 = no chunking)
 
-    def start(self):
+    def start(self, on_chunk=None, chunk_interval_ms: int = 500):
+        """Start recording. If on_chunk is provided, calls it with WAV bytes every chunk_interval_ms."""
         with self._lock:
             self._frames = []
+            self._chunk_frames = []
             self._recording = True
+            self._on_chunk = on_chunk
+            self._chunk_size = int(self.sample_rate * chunk_interval_ms / 1000) if on_chunk else 0
+
             self._stream = sd.InputStream(
                 samplerate=self.sample_rate,
                 channels=self.channels,
@@ -36,24 +44,43 @@ class AudioRecorder:
                 self._stream.close()
                 self._stream = None
 
+            # Send any remaining chunk frames
+            if self._on_chunk and self._chunk_frames:
+                wav = self._frames_to_wav(self._chunk_frames)
+                self._on_chunk(wav)
+                self._chunk_frames = []
+
+            self._on_chunk = None
+
         if not self._frames:
             return b""
 
-        audio_data = np.concatenate(self._frames, axis=0)
+        return self._frames_to_wav(self._frames)
 
-        # Convert to WAV bytes
+    def _callback(self, indata, frames, time, status):
+        if not self._recording:
+            return
+        frame = indata.copy()
+        self._frames.append(frame)
+
+        # Chunked streaming
+        if self._on_chunk and self._chunk_size > 0:
+            self._chunk_frames.append(frame)
+            total_samples = sum(f.shape[0] for f in self._chunk_frames)
+            if total_samples >= self._chunk_size:
+                wav = self._frames_to_wav(self._chunk_frames)
+                self._chunk_frames = []
+                self._on_chunk(wav)
+
+    def _frames_to_wav(self, frames: list[np.ndarray]) -> bytes:
+        audio_data = np.concatenate(frames, axis=0)
         buf = io.BytesIO()
         with wave.open(buf, "wb") as wf:
             wf.setnchannels(self.channels)
-            wf.setsampwidth(2)  # 16-bit
+            wf.setsampwidth(2)
             wf.setframerate(self.sample_rate)
             wf.writeframes(audio_data.tobytes())
-
         return buf.getvalue()
-
-    def _callback(self, indata, frames, time, status):
-        if self._recording:
-            self._frames.append(indata.copy())
 
     def record_for(self, seconds: float) -> bytes:
         """Record for a fixed duration and return audio bytes."""
