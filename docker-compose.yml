@@ -16,7 +16,7 @@ services:
 
   # Parley API — FastAPI + faster-whisper
   parley:
-    build: ./server
+    image: ghcr.io/jerremywallas/parley:latest
     restart: unless-stopped
     deploy:
       resources:

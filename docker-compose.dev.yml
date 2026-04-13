@@ -1,0 +1,5 @@
+# For local development: docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+services:
+  parley:
+    build: ./server
+    image: parley:dev
