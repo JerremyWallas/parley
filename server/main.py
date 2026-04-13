@@ -41,23 +41,34 @@ app.add_middleware(
 async def health():
     """Server health check with GPU and Ollama status."""
     ollama_status = await cleanup.check_ollama()
+    active_llm = cleanup._get_active_model()
 
-    gpu_info = "unknown"
+    gpu_name = "unknown"
+    gpu_memory_used = 0
+    gpu_memory_total = 0
     try:
         import subprocess
         result = subprocess.run(
-            ["nvidia-smi", "--query-gpu=name,memory.used,memory.total", "--format=csv,noheader"],
+            ["nvidia-smi", "--query-gpu=name,memory.used,memory.total", "--format=csv,noheader,nounits"],
             capture_output=True, text=True, timeout=5,
         )
         if result.returncode == 0:
-            gpu_info = result.stdout.strip()
+            parts = [p.strip() for p in result.stdout.strip().split(",")]
+            if len(parts) == 3:
+                gpu_name = parts[0]
+                gpu_memory_used = int(parts[1])
+                gpu_memory_total = int(parts[2])
     except Exception:
         pass
 
     return {
         "status": "ok",
         "whisper_model": config.WHISPER_MODEL,
-        "gpu": gpu_info,
+        "llm_model": active_llm,
+        "gpu_name": gpu_name,
+        "gpu_memory_used_mb": gpu_memory_used,
+        "gpu_memory_total_mb": gpu_memory_total,
+        "gpu_memory_percent": round(gpu_memory_used / gpu_memory_total * 100, 1) if gpu_memory_total > 0 else 0,
         "ollama": ollama_status,
         "language_stats": personalization.get_language_stats(),
     }

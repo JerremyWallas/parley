@@ -709,9 +709,38 @@ async function checkServer() {
   const el = document.getElementById("serverStatus");
   try {
     const data = await apiGet("/api/health");
-    el.innerHTML = `<span style="color:var(--success)">Verbunden</span> · GPU: ${data.gpu} · Whisper: ${data.whisper_model}`;
+    const usedMB = data.gpu_memory_used_mb || 0;
+    const totalMB = data.gpu_memory_total_mb || 0;
+    const pct = data.gpu_memory_percent || 0;
+    const usedGB = (usedMB / 1024).toFixed(1);
+    const totalGB = (totalMB / 1024).toFixed(1);
+
+    el.innerHTML = `
+      <div class="server-status-grid">
+        <div class="status-row">
+          <span class="status-dot connected"></span>
+          <span class="status-label">Verbunden</span>
+        </div>
+        <div class="status-row">
+          <span class="status-key">GPU</span>
+          <span class="status-value">${escapeHtml(data.gpu_name || "unknown")}</span>
+        </div>
+        <div class="status-row">
+          <span class="status-key">VRAM</span>
+          <span class="status-value">${usedGB} / ${totalGB} GB (${pct}%)</span>
+        </div>
+        <div class="status-row">
+          <span class="status-key">Transkription</span>
+          <span class="status-value">${escapeHtml(data.whisper_model || "unknown")}</span>
+        </div>
+        <div class="status-row">
+          <span class="status-key">Textverarbeitung</span>
+          <span class="status-value">${escapeHtml(data.llm_model || "keins")}</span>
+        </div>
+      </div>
+    `;
   } catch {
-    el.innerHTML = '<span style="color:var(--recording)">Nicht erreichbar</span>';
+    el.innerHTML = '<div class="server-status-grid"><div class="status-row"><span class="status-dot disconnected"></span><span class="status-label" style="color:var(--recording)">Nicht erreichbar</span></div></div>';
   }
 }
 
