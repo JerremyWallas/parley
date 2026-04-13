@@ -2,12 +2,12 @@
 let currentMode = localStorage.getItem("stt-mode") || "raw";
 let serverUrl = localStorage.getItem("stt-server") || "";
 let mediaRecorder = null;
-let audioChunks = [];
 let isRecording = false;
 let audioContext = null;
 let analyser = null;
 let animationFrame = null;
 let lastRawText = "";
+let ws = null;
 
 // --- DOM ---
 const recordBtn = document.getElementById("recordBtn");
@@ -16,7 +16,8 @@ const resultArea = document.getElementById("resultArea");
 const rawTextEl = document.getElementById("rawText");
 const resultText = document.getElementById("resultText");
 const resultMeta = document.getElementById("resultMeta");
-const copyBtn = document.getElementById("copyBtn");
+const copyRawBtn = document.getElementById("copyRawBtn");
+const copyResultBtn = document.getElementById("copyResultBtn");
 const saveCorrection = document.getElementById("saveCorrection");
 const correctionStatus = document.getElementById("correctionStatus");
 const settingsBtn = document.getElementById("settingsBtn");
@@ -32,6 +33,11 @@ const canvasCtx = canvas.getContext("2d");
 function apiUrl(path) {
   const base = serverUrl || window.location.origin;
   return base.replace(/\/$/, "") + path;
+}
+
+function wsUrl(path) {
+  const base = serverUrl || window.location.origin;
+  return base.replace(/\/$/, "").replace(/^http/, "ws") + path;
 }
 
 async function apiPost(path, body) {
@@ -60,10 +66,20 @@ modeButtons.forEach(btn => {
 });
 setMode(currentMode);
 
-// --- Audio recording ---
+// --- WebSocket streaming ---
+function getOpusMimeType() {
+  const types = ["audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus", "audio/mp4"];
+  for (const type of types) {
+    if (MediaRecorder.isTypeSupported(type)) return type;
+  }
+  return "audio/webm";
+}
+
 async function startRecording() {
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: { sampleRate: 16000, channelCount: 1, echoCancellation: true, noiseSuppression: true },
+    });
 
     // Setup visualizer
     audioContext = new AudioContext();
@@ -73,28 +89,54 @@ async function startRecording() {
     source.connect(analyser);
     drawWaveform();
 
-    mediaRecorder = new MediaRecorder(stream, { mimeType: getSupportedMimeType() });
-    audioChunks = [];
+    // Open WebSocket connection
+    ws = new WebSocket(wsUrl("/ws/transcribe"));
+    ws.binaryType = "arraybuffer";
 
-    mediaRecorder.ondataavailable = (e) => {
-      if (e.data.size > 0) audioChunks.push(e.data);
+    ws.onopen = () => {
+      // Start recording with Opus compression, send chunks every 500ms
+      mediaRecorder = new MediaRecorder(stream, {
+        mimeType: getOpusMimeType(),
+        audioBitsPerSecond: 16000,
+      });
+
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0 && ws && ws.readyState === WebSocket.OPEN) {
+          e.data.arrayBuffer().then(buf => ws.send(buf));
+        }
+      };
+
+      mediaRecorder.onstop = () => {
+        stream.getTracks().forEach(t => t.stop());
+        cancelAnimationFrame(animationFrame);
+        if (audioContext) {
+          audioContext.close();
+          audioContext = null;
+        }
+        clearCanvas();
+      };
+
+      // Collect chunks every 500ms for streaming upload
+      mediaRecorder.start(500);
     };
 
-    mediaRecorder.onstop = async () => {
-      stream.getTracks().forEach(t => t.stop());
-      cancelAnimationFrame(animationFrame);
-      if (audioContext) {
-        audioContext.close();
-        audioContext = null;
+    ws.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      handleStreamMessage(data);
+    };
+
+    ws.onerror = () => {
+      statusEl.textContent = "WebSocket-Verbindung fehlgeschlagen, nutze Fallback...";
+      // Fallback: if WebSocket fails, fall back to REST
+      if (mediaRecorder && mediaRecorder.state === "recording") {
+        fallbackToRest(stream);
       }
-      clearCanvas();
-
-      if (audioChunks.length === 0) return;
-      const blob = new Blob(audioChunks, { type: mediaRecorder.mimeType });
-      await sendAudio(blob);
     };
 
-    mediaRecorder.start();
+    ws.onclose = () => {
+      ws = null;
+    };
+
     isRecording = true;
     recordBtn.classList.add("recording");
     recordBtn.querySelector(".label").textContent = "Aufnahme läuft...";
@@ -106,60 +148,132 @@ async function startRecording() {
 }
 
 function stopRecording() {
+  if (!isRecording) return;
+  isRecording = false;
+  recordBtn.classList.remove("recording");
+  recordBtn.classList.add("processing");
+  recordBtn.querySelector(".label").textContent = "Verarbeite...";
+
   if (mediaRecorder && mediaRecorder.state === "recording") {
     mediaRecorder.stop();
-    isRecording = false;
-    recordBtn.classList.remove("recording");
-    recordBtn.classList.add("processing");
-    recordBtn.querySelector(".label").textContent = "Verarbeite...";
+  }
+
+  // Send stop signal via WebSocket
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: "stop", mode: currentMode }));
   }
 }
 
-function getSupportedMimeType() {
-  const types = ["audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus", "audio/mp4"];
-  for (const type of types) {
-    if (MediaRecorder.isTypeSupported(type)) return type;
-  }
-  return "audio/webm";
+// --- REST fallback for when WebSocket is unavailable ---
+function fallbackToRest(stream) {
+  const fallbackRecorder = new MediaRecorder(stream, { mimeType: getOpusMimeType() });
+  const chunks = [];
+  fallbackRecorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
+  fallbackRecorder.onstop = async () => {
+    stream.getTracks().forEach(t => t.stop());
+    if (chunks.length === 0) return;
+    const blob = new Blob(chunks, { type: fallbackRecorder.mimeType });
+    await sendAudioRest(blob);
+  };
+  fallbackRecorder.start();
+  // Stop after current recording ends
+  setTimeout(() => {
+    if (fallbackRecorder.state === "recording") fallbackRecorder.stop();
+  }, 100);
 }
 
-// --- Send audio to server ---
-async function sendAudio(blob) {
+async function sendAudioRest(blob) {
   try {
     const formData = new FormData();
     formData.append("audio", blob, "recording.webm");
     formData.append("mode", currentMode);
-
     const result = await apiPost("/api/transcribe", { body: formData });
-
-    lastRawText = result.raw_text;
-    resultText.value = result.processed_text || result.raw_text;
-
-    // Show raw text if mode is not raw and texts differ
-    if (currentMode !== "raw" && result.raw_text !== result.processed_text) {
-      rawTextEl.classList.remove("hidden");
-      rawTextEl.querySelector("p").textContent = result.raw_text;
-    } else {
-      rawTextEl.classList.add("hidden");
-    }
-
-    resultMeta.textContent = `${result.language?.toUpperCase()} · ${result.duration_ms}ms · ${currentMode}`;
-    resultArea.classList.remove("hidden");
-    correctionStatus.textContent = "";
-
-    // Auto-copy to clipboard
-    await copyToClipboard(result.processed_text || result.raw_text);
-
-    // Save to history
-    addToHistory(result);
-
-    statusEl.textContent = "In Zwischenablage kopiert";
+    showFinalResult(result.raw_text, result.processed_text || result.raw_text, result.language, result.duration_ms);
   } catch (err) {
     statusEl.textContent = "Fehler: " + err.message;
-    console.error("Send error:", err);
   } finally {
     recordBtn.classList.remove("processing");
     recordBtn.querySelector(".label").textContent = "Halten zum Sprechen";
+  }
+}
+
+// --- Handle streaming messages from WebSocket ---
+let streamingSegments = [];
+let streamingLLMText = "";
+
+function handleStreamMessage(data) {
+  switch (data.type) {
+    case "segment":
+      // Whisper segment arrived — show immediately
+      streamingSegments.push(data.text);
+      rawTextEl.classList.remove("hidden");
+      rawTextEl.querySelector("p").textContent = streamingSegments.join(" ");
+      resultArea.classList.remove("hidden");
+      statusEl.textContent = "Transkribiere...";
+      break;
+
+    case "transcription_done":
+      lastRawText = data.raw_text;
+      rawTextEl.querySelector("p").textContent = data.raw_text;
+      resultMeta.textContent = `${data.language?.toUpperCase()} · ${data.duration_ms}ms · ${currentMode}`;
+
+      if (currentMode === "raw") {
+        resultText.value = data.raw_text;
+        rawTextEl.classList.add("hidden");
+      } else {
+        // Show raw text, clear result for incoming LLM stream
+        resultText.value = "";
+        streamingLLMText = "";
+        statusEl.textContent = "Formuliere um...";
+      }
+      break;
+
+    case "llm_token":
+      // LLM token arrived — append to result
+      streamingLLMText += data.token;
+      resultText.value = streamingLLMText;
+      // Auto-scroll textarea to bottom
+      resultText.scrollTop = resultText.scrollHeight;
+      break;
+
+    case "llm_done":
+      resultText.value = data.processed_text || lastRawText;
+      correctionStatus.textContent = "";
+      resultArea.classList.remove("hidden");
+
+      // Hide raw text section if mode is raw or texts are identical
+      if (currentMode === "raw" || data.processed_text === lastRawText) {
+        rawTextEl.classList.add("hidden");
+      }
+
+      // Auto-copy final result to clipboard
+      copyToClipboard(data.processed_text || lastRawText);
+      statusEl.textContent = "In Zwischenablage kopiert";
+
+      // Save to server history
+      saveToHistory({
+        raw_text: lastRawText,
+        processed_text: data.processed_text || lastRawText,
+        mode: currentMode,
+        language: resultMeta.textContent.split(" · ")[0],
+      });
+
+      // Reset state
+      streamingSegments = [];
+      streamingLLMText = "";
+      recordBtn.classList.remove("processing");
+      recordBtn.querySelector(".label").textContent = "Halten zum Sprechen";
+
+      // Close WebSocket
+      if (ws) { ws.close(); ws = null; }
+      break;
+
+    case "error":
+      statusEl.textContent = "Fehler: " + data.message;
+      recordBtn.classList.remove("processing");
+      recordBtn.querySelector(".label").textContent = "Halten zum Sprechen";
+      if (ws) { ws.close(); ws = null; }
+      break;
   }
 }
 
@@ -169,7 +283,6 @@ async function copyToClipboard(text) {
     await navigator.clipboard.writeText(text);
     return true;
   } catch {
-    // Fallback
     const ta = document.createElement("textarea");
     ta.value = text;
     document.body.appendChild(ta);
@@ -180,9 +293,16 @@ async function copyToClipboard(text) {
   }
 }
 
-copyBtn.addEventListener("click", async () => {
+copyResultBtn.addEventListener("click", async () => {
   await copyToClipboard(resultText.value);
-  statusEl.textContent = "In Zwischenablage kopiert";
+  copyResultBtn.textContent = "Kopiert!";
+  setTimeout(() => { copyResultBtn.textContent = "📋 Kopieren"; }, 1500);
+});
+
+copyRawBtn.addEventListener("click", async () => {
+  await copyToClipboard(lastRawText);
+  copyRawBtn.textContent = "Kopiert!";
+  setTimeout(() => { copyRawBtn.textContent = "📋 Kopieren"; }, 1500);
 });
 
 // --- Correction feedback ---
@@ -213,7 +333,6 @@ recordBtn.addEventListener("touchstart", (e) => { e.preventDefault(); startRecor
 recordBtn.addEventListener("touchend", (e) => { e.preventDefault(); stopRecording(); });
 recordBtn.addEventListener("touchcancel", () => { if (isRecording) stopRecording(); });
 
-// Prevent context menu on long press (mobile)
 recordBtn.addEventListener("contextmenu", (e) => e.preventDefault());
 
 // --- Waveform visualizer ---
@@ -233,7 +352,6 @@ function drawWaveform() {
 
   canvasCtx.clearRect(0, 0, width, height);
 
-  // Draw circular waveform
   const bars = 64;
   const step = Math.floor(bufferLength / bars);
 
@@ -261,54 +379,79 @@ function clearCanvas() {
   canvasCtx.clearRect(0, 0, canvas.width, canvas.height);
 }
 
-// --- History ---
-function getHistory() {
+// --- History (server-side with local fallback) ---
+async function saveToHistory(result) {
+  try {
+    await apiPost("/api/history", {
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        raw_text: result.raw_text,
+        processed_text: result.processed_text,
+        mode: result.mode,
+        language: result.language,
+      }),
+    });
+  } catch {
+    // Fallback: save locally if server is unreachable
+    const history = getLocalHistory();
+    history.unshift({
+      text: result.processed_text || result.raw_text,
+      raw: result.raw_text,
+      mode: result.mode,
+      language: result.language,
+      time: new Date().toISOString(),
+    });
+    if (history.length > 50) history.length = 50;
+    localStorage.setItem("stt-history", JSON.stringify(history));
+  }
+  loadHistory();
+}
+
+function getLocalHistory() {
   try {
     return JSON.parse(localStorage.getItem("stt-history") || "[]");
   } catch { return []; }
 }
 
-function addToHistory(result) {
-  const history = getHistory();
-  history.unshift({
-    text: result.processed_text || result.raw_text,
-    raw: result.raw_text,
-    mode: result.mode,
-    language: result.language,
-    time: new Date().toISOString(),
-  });
-  // Keep last 50
-  if (history.length > 50) history.length = 50;
-  localStorage.setItem("stt-history", JSON.stringify(history));
-  renderHistory();
+async function loadHistory() {
+  try {
+    const data = await apiGet("/api/history");
+    renderHistory(data.entries || []);
+  } catch {
+    renderHistory(getLocalHistory());
+  }
 }
 
-function renderHistory() {
-  const history = getHistory();
+function renderHistory(entries) {
   historyList.innerHTML = "";
-  if (history.length === 0) {
+  if (entries.length === 0) {
     historyList.innerHTML = '<p style="color:var(--text-muted);font-size:0.85rem">Noch keine Einträge</p>';
     return;
   }
-  for (const item of history.slice(0, 20)) {
+  for (const item of entries.slice(0, 20)) {
     const el = document.createElement("div");
     el.className = "history-item";
-    const time = new Date(item.time).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
+    const text = item.processed_text || item.text || "";
+    const mode = item.mode || "raw";
+    const time = item.time ? new Date(item.time).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" }) : "";
     el.innerHTML = `
-      <span class="time">${time}<span class="mode-tag">${item.mode}</span></span>
-      <div class="text">${escapeHtml(item.text)}</div>
+      <span class="time">${time}<span class="mode-tag">${mode}</span></span>
+      <div class="text">${escapeHtml(text)}</div>
     `;
     el.addEventListener("click", async () => {
-      await copyToClipboard(item.text);
+      await copyToClipboard(text);
       statusEl.textContent = "Aus Verlauf kopiert";
     });
     historyList.appendChild(el);
   }
 }
 
-clearHistory.addEventListener("click", () => {
+clearHistory.addEventListener("click", async () => {
   localStorage.removeItem("stt-history");
-  renderHistory();
+  try {
+    await fetch(apiUrl("/api/history"), { method: "DELETE" });
+  } catch { /* ignore */ }
+  loadHistory();
 });
 
 function escapeHtml(text) {
@@ -332,16 +475,15 @@ settingsModal.addEventListener("click", (e) => {
 });
 
 async function loadSettings() {
-  // Server URL
   document.getElementById("serverUrl").value = serverUrl;
 
-  // Glossary
+  loadModels();
+
   try {
     const data = await apiGet("/api/glossary");
     renderGlossary(data.words || []);
   } catch { renderGlossary([]); }
 
-  // Language stats
   try {
     const data = await apiGet("/api/health");
     const stats = data.language_stats || {};
@@ -394,6 +536,48 @@ document.getElementById("glossaryInput").addEventListener("keydown", (e) => {
   if (e.key === "Enter") document.getElementById("addGlossaryBtn").click();
 });
 
+// Model selector
+async function loadModels() {
+  const container = document.getElementById("modelSelector");
+  const modelStatusEl = document.getElementById("modelStatus");
+  try {
+    const data = await apiGet("/api/models");
+    container.innerHTML = "";
+    for (const model of data.models) {
+      const el = document.createElement("div");
+      el.className = "model-option" + (model.id === data.active ? " active" : "");
+      el.innerHTML = `
+        <div class="model-info">
+          <span class="model-name">${escapeHtml(model.name)}${model.installed ? "" : " (nicht installiert)"}</span>
+          <span class="model-desc">${escapeHtml(model.desc)}</span>
+        </div>
+        <span class="model-vram">${escapeHtml(model.vram)}</span>
+      `;
+      el.addEventListener("click", async () => {
+        modelStatusEl.innerHTML = '<span style="color:var(--accent)">Modell wird gewechselt...</span>';
+        try {
+          await fetch(apiUrl("/api/models"), {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ model: model.id }),
+          });
+          if (!model.installed) {
+            modelStatusEl.innerHTML = '<span style="color:var(--accent)">Modell wird heruntergeladen — das kann dauern.</span>';
+          } else {
+            modelStatusEl.innerHTML = '<span style="color:var(--success)">Modell gewechselt!</span>';
+          }
+          await loadModels();
+        } catch (err) {
+          modelStatusEl.innerHTML = '<span style="color:var(--recording)">Fehler: ' + escapeHtml(err.message) + '</span>';
+        }
+      });
+      container.appendChild(el);
+    }
+  } catch {
+    container.innerHTML = '<p style="color:var(--text-muted);font-size:0.85rem">Server nicht erreichbar</p>';
+  }
+}
+
 // Server URL
 document.getElementById("saveServerUrl").addEventListener("click", () => {
   serverUrl = document.getElementById("serverUrl").value.trim();
@@ -412,9 +596,8 @@ async function checkServer() {
 }
 
 // --- Init ---
-renderHistory();
+loadHistory();
 
-// Register service worker
 if ("serviceWorker" in navigator) {
   navigator.serviceWorker.register("sw.js").catch(() => {});
 }

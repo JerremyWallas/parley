@@ -1,6 +1,7 @@
 import io
 import time
 import logging
+from typing import Generator
 from faster_whisper import WhisperModel
 from config import WHISPER_MODEL, WHISPER_DEVICE, WHISPER_COMPUTE_TYPE, MODEL_DIR
 
@@ -45,6 +46,37 @@ def transcribe(audio_bytes: bytes, initial_prompt: str | None = None) -> dict:
 
     return {
         "raw_text": raw_text,
+        "language": info.language,
+        "language_probability": round(info.language_probability, 2),
+        "duration_ms": duration_ms,
+    }
+
+
+def transcribe_streaming(audio_bytes: bytes, initial_prompt: str | None = None) -> Generator[dict, None, None]:
+    """Transcribe audio and yield each segment as it's ready."""
+    model = get_model()
+
+    start = time.time()
+    segments, info = model.transcribe(
+        io.BytesIO(audio_bytes),
+        beam_size=5,
+        initial_prompt=initial_prompt,
+        vad_filter=True,
+        vad_parameters=dict(min_silence_duration_ms=500),
+    )
+
+    for segment in segments:
+        yield {
+            "type": "segment",
+            "text": segment.text.strip(),
+            "start": round(segment.start, 2),
+            "end": round(segment.end, 2),
+            "language": info.language,
+        }
+
+    duration_ms = int((time.time() - start) * 1000)
+    yield {
+        "type": "transcription_done",
         "language": info.language,
         "language_probability": round(info.language_probability, 2),
         "duration_ms": duration_ms,

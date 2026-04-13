@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 from pathlib import Path
 from config import DATA_DIR, MAX_FEW_SHOT_EXAMPLES
 
@@ -9,6 +10,8 @@ CORRECTIONS_FILE = DATA_DIR / "corrections.jsonl"
 GLOSSARY_FILE = DATA_DIR / "glossary.json"
 LANGUAGE_STATS_FILE = DATA_DIR / "language_stats.json"
 PREFERENCES_FILE = DATA_DIR / "preferences.json"
+HISTORY_FILE = DATA_DIR / "history.jsonl"
+MAX_HISTORY = int(os.getenv("MAX_HISTORY", "200"))
 
 
 def _ensure_data_dir():
@@ -17,14 +20,32 @@ def _ensure_data_dir():
 
 # --- Corrections (Few-Shot Learning) ---
 
+MAX_CORRECTIONS = int(os.getenv("MAX_CORRECTIONS", "100"))
+
+
 def save_correction(original: str, corrected: str):
-    """Save a correction pair for few-shot learning."""
+    """Save a correction pair for few-shot learning. Keeps only the last MAX_CORRECTIONS entries."""
     if original.strip() == corrected.strip():
         return
     _ensure_data_dir()
     with open(CORRECTIONS_FILE, "a", encoding="utf-8") as f:
         f.write(json.dumps({"original": original, "corrected": corrected}, ensure_ascii=False) + "\n")
     logger.info(f"Saved correction: '{original[:50]}...' -> '{corrected[:50]}...'")
+
+    # Truncate to last MAX_CORRECTIONS entries
+    _truncate_corrections()
+
+
+def _truncate_corrections():
+    """Keep only the last MAX_CORRECTIONS entries in the corrections file."""
+    if not CORRECTIONS_FILE.exists():
+        return
+    with open(CORRECTIONS_FILE, "r", encoding="utf-8") as f:
+        lines = f.readlines()
+    if len(lines) > MAX_CORRECTIONS:
+        with open(CORRECTIONS_FILE, "w", encoding="utf-8") as f:
+            f.writelines(lines[-MAX_CORRECTIONS:])
+        logger.info(f"Truncated corrections to last {MAX_CORRECTIONS} entries")
 
 
 def get_recent_corrections(n: int = MAX_FEW_SHOT_EXAMPLES) -> list[dict]:
@@ -125,3 +146,54 @@ def save_preferences(prefs: dict):
     _ensure_data_dir()
     with open(PREFERENCES_FILE, "w", encoding="utf-8") as f:
         json.dump(prefs, f, ensure_ascii=False, indent=2)
+
+
+# --- History (server-side, synced across devices) ---
+
+def save_history_entry(raw_text: str, processed_text: str, mode: str, language: str):
+    """Append a transcription to the history. Truncates to MAX_HISTORY entries."""
+    _ensure_data_dir()
+    from datetime import datetime, timezone
+    entry = {
+        "raw_text": raw_text,
+        "processed_text": processed_text,
+        "mode": mode,
+        "language": language,
+        "time": datetime.now(timezone.utc).isoformat(),
+    }
+    with open(HISTORY_FILE, "a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    _truncate_history()
+    logger.info(f"Saved history entry: '{processed_text[:50]}...'")
+
+
+def get_history(n: int = 50) -> list[dict]:
+    """Get the most recent history entries."""
+    if not HISTORY_FILE.exists():
+        return []
+    entries = []
+    with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                entries.append(json.loads(line))
+    return list(reversed(entries[-n:]))
+
+
+def clear_history():
+    """Delete all history entries."""
+    if HISTORY_FILE.exists():
+        HISTORY_FILE.unlink()
+    logger.info("History cleared")
+
+
+def _truncate_history():
+    """Keep only the last MAX_HISTORY entries."""
+    if not HISTORY_FILE.exists():
+        return
+    with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+        lines = f.readlines()
+    if len(lines) > MAX_HISTORY:
+        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+            f.writelines(lines[-MAX_HISTORY:])
+        logger.info(f"Truncated history to last {MAX_HISTORY} entries")

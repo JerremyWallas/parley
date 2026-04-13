@@ -64,7 +64,18 @@ docker compose up -d
 # Wait for Ollama to be ready
 echo ""
 echo "Waiting for Ollama to start..."
-sleep 5
+OLLAMA_RETRIES=0
+OLLAMA_MAX_RETRIES=30
+until docker compose exec ollama ollama list &>/dev/null; do
+    OLLAMA_RETRIES=$((OLLAMA_RETRIES + 1))
+    if [ "$OLLAMA_RETRIES" -ge "$OLLAMA_MAX_RETRIES" ]; then
+        echo -e "${YELLOW}Ollama did not become ready in time. Check logs: docker compose logs ollama${NC}"
+        exit 1
+    fi
+    echo "  Ollama not ready yet, retrying ($OLLAMA_RETRIES/$OLLAMA_MAX_RETRIES)..."
+    sleep 2
+done
+echo "Ollama is ready."
 
 # Pull LLM model
 OLLAMA_MODEL="${OLLAMA_MODEL:-qwen2.5:7b}"

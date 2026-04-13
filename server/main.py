@@ -1,6 +1,8 @@
+import json
 import logging
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+import httpx
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -157,6 +159,193 @@ async def get_preferences():
 async def update_preferences(data: dict):
     personalization.save_preferences(data)
     return data
+
+
+# --- History (server-side, synced across devices) ---
+
+@app.get("/api/history")
+async def get_history():
+    return {"entries": personalization.get_history()}
+
+
+@app.post("/api/history")
+async def add_history(data: dict):
+    personalization.save_history_entry(
+        raw_text=data.get("raw_text", ""),
+        processed_text=data.get("processed_text", ""),
+        mode=data.get("mode", "raw"),
+        language=data.get("language", ""),
+    )
+    return {"status": "ok"}
+
+
+@app.delete("/api/history")
+async def clear_history():
+    personalization.clear_history()
+    return {"status": "ok"}
+
+
+# --- Model selection ---
+
+AVAILABLE_MODELS = [
+    {"id": "qwen2.5:3b", "name": "Qwen 2.5 3B", "desc": "Schnell, einfache Aufgaben", "vram": "~2 GB"},
+    {"id": "qwen2.5:7b", "name": "Qwen 2.5 7B", "desc": "Gute Balance aus Qualitaet und Geschwindigkeit", "vram": "~5 GB"},
+    {"id": "qwen2.5:14b", "name": "Qwen 2.5 14B", "desc": "Besseres Textverstaendnis und Reformulierung", "vram": "~10 GB"},
+    {"id": "qwen2.5:32b", "name": "Qwen 2.5 32B", "desc": "Beste Qualitaet, braucht viel Speicher", "vram": "~20 GB"},
+    {"id": "gemma2:2b", "name": "Gemma 2 2B", "desc": "Sehr schnell, Basisqualitaet", "vram": "~2 GB"},
+    {"id": "gemma2:9b", "name": "Gemma 2 9B", "desc": "Gute Qualitaet, kompakt", "vram": "~6 GB"},
+    {"id": "llama3.1:8b", "name": "Llama 3.1 8B", "desc": "Solide Allround-Qualitaet", "vram": "~5 GB"},
+    {"id": "mistral:7b", "name": "Mistral 7B", "desc": "Schnell, gute europaeische Sprachen", "vram": "~5 GB"},
+]
+
+
+@app.get("/api/models")
+async def get_models():
+    """List available models with the currently active one."""
+    prefs = personalization.get_preferences()
+    active = prefs.get("ollama_model", config.OLLAMA_MODEL)
+
+    # Check which models are actually pulled in Ollama
+    installed = []
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(f"{config.OLLAMA_URL}/api/tags")
+            resp.raise_for_status()
+            tags = resp.json()
+            installed = [m["name"] for m in tags.get("models", [])]
+    except Exception:
+        pass
+
+    models = []
+    for m in AVAILABLE_MODELS:
+        models.append({**m, "installed": any(m["id"] in name for name in installed)})
+
+    return {"models": models, "active": active}
+
+
+@app.put("/api/models")
+async def set_model(data: dict):
+    """Set the active LLM model. Pulls it if not yet installed."""
+    model_id = data.get("model", "").strip()
+    if not model_id:
+        raise HTTPException(400, "Field 'model' is required.")
+
+    prefs = personalization.get_preferences()
+    prefs["ollama_model"] = model_id
+    personalization.save_preferences(prefs)
+
+    return {"active": model_id}
+
+
+# --- WebSocket streaming endpoint ---
+
+@app.websocket("/ws/transcribe")
+async def ws_transcribe(ws: WebSocket):
+    """WebSocket endpoint for streaming audio upload and result streaming.
+
+    Protocol:
+    Client sends:
+      - binary frames: audio chunks (Opus/WebM) during recording
+      - text frame: '{"type":"stop","mode":"raw|cleanup|rephrase"}' when done
+
+    Server sends:
+      - '{"type":"segment","text":"..."}' for each Whisper segment
+      - '{"type":"transcription_done","raw_text":"...","language":"...","duration_ms":N}'
+      - '{"type":"llm_token","token":"..."}' for each LLM token
+      - '{"type":"llm_done","processed_text":"..."}' when LLM is finished
+      - '{"type":"error","message":"..."}' on errors
+    """
+    await ws.accept()
+    audio_buffer = bytearray()
+
+    try:
+        while True:
+            message = await ws.receive()
+
+            if message.get("type") == "websocket.disconnect":
+                break
+
+            # Binary frame = audio chunk
+            if "bytes" in message and message["bytes"]:
+                audio_buffer.extend(message["bytes"])
+                continue
+
+            # Text frame = control message
+            if "text" in message:
+                data = json.loads(message["text"])
+                if data.get("type") != "stop":
+                    continue
+
+                mode = data.get("mode", "raw")
+                if mode not in ("raw", "cleanup", "rephrase"):
+                    mode = "raw"
+
+                if not audio_buffer:
+                    await ws.send_json({"type": "error", "message": "No audio received"})
+                    continue
+
+                audio_bytes = bytes(audio_buffer)
+                audio_buffer.clear()
+
+                # --- Phase 1: Stream Whisper segments ---
+                initial_prompt = personalization.build_initial_prompt()
+                full_text_parts = []
+                language = ""
+                duration_ms = 0
+
+                for result in transcriber.transcribe_streaming(audio_bytes, initial_prompt=initial_prompt):
+                    if result["type"] == "segment":
+                        full_text_parts.append(result["text"])
+                        language = result["language"]
+                        await ws.send_json({
+                            "type": "segment",
+                            "text": result["text"],
+                        })
+                    elif result["type"] == "transcription_done":
+                        language = result["language"]
+                        duration_ms = result["duration_ms"]
+
+                raw_text = " ".join(full_text_parts).strip()
+
+                await ws.send_json({
+                    "type": "transcription_done",
+                    "raw_text": raw_text,
+                    "language": language,
+                    "duration_ms": duration_ms,
+                })
+
+                if not raw_text:
+                    await ws.send_json({"type": "llm_done", "processed_text": ""})
+                    continue
+
+                # Update language stats
+                personalization.update_language_stats(language)
+
+                # --- Phase 2: Stream LLM tokens ---
+                if mode == "raw":
+                    await ws.send_json({"type": "llm_done", "processed_text": raw_text})
+                else:
+                    few_shot = personalization.get_recent_corrections()
+                    full_response = []
+                    async for token in cleanup.process_text_streaming(mode, raw_text, few_shot):
+                        full_response.append(token)
+                        await ws.send_json({"type": "llm_token", "token": token})
+
+                    processed_text = "".join(full_response).strip()
+                    # Remove surrounding quotes if the model wrapped the response
+                    if len(processed_text) >= 2 and processed_text[0] == '"' and processed_text[-1] == '"':
+                        processed_text = processed_text[1:-1]
+
+                    await ws.send_json({"type": "llm_done", "processed_text": processed_text})
+
+    except WebSocketDisconnect:
+        logger.debug("WebSocket client disconnected")
+    except Exception as e:
+        logger.error(f"WebSocket error: {e}")
+        try:
+            await ws.send_json({"type": "error", "message": str(e)})
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":

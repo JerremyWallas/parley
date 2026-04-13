@@ -42,13 +42,19 @@
     <div id="resultArea" class="hidden">
       <div id="resultHeader">
         <span id="resultMeta"></span>
-        <button id="copyBtn" class="icon-btn" title="Kopieren">📋</button>
       </div>
       <div id="rawText" class="hidden">
-        <label>Original:</label>
+        <div class="text-section-header">
+          <label>Original:</label>
+          <button id="copyRawBtn" class="copy-btn" title="Original kopieren">📋 Kopieren</button>
+        </div>
         <p></p>
       </div>
       <div id="processedText">
+        <div class="text-section-header">
+          <label>Ergebnis:</label>
+          <button id="copyResultBtn" class="copy-btn" title="Ergebnis kopieren">📋 Kopieren</button>
+        </div>
         <textarea id="resultText" rows="4" placeholder="Ergebnis..."></textarea>
       </div>
       <div id="resultActions">
@@ -70,6 +76,13 @@
           <h2>Einstellungen</h2>
           <button id="closeSettings" class="icon-btn">✕</button>
         </div>
+
+        <section>
+          <h3>LLM-Modell</h3>
+          <p class="hint">Modell fuer Cleanup und Reformulieren. Groessere Modelle liefern bessere Ergebnisse, brauchen aber mehr VRAM.</p>
+          <div id="modelSelector" class="model-list"></div>
+          <div id="modelStatus"></div>
+        </section>
 
         <section>
           <h3>Glossar</h3>
