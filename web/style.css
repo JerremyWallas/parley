@@ -509,6 +509,32 @@ section h3 {
   background: #2563eb;
 }
 
+.model-del-btn {
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 6px;
+  background: var(--surface-hover);
+  color: var(--recording);
+  font-size: 0.8rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.2s;
+  flex-shrink: 0;
+}
+
+.model-del-btn:hover {
+  background: var(--recording);
+  color: white;
+}
+
+.model-del-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .model-progress-wrap {
   display: flex;
   align-items: center;

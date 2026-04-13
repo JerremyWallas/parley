@@ -561,7 +561,7 @@ async function loadModels() {
       actionsDiv.className = "model-actions";
 
       if (!model.installed) {
-        // Download button + VRAM badge
+        // Download button
         const dlBtn = document.createElement("button");
         dlBtn.className = "model-dl-btn";
         dlBtn.title = "Modell herunterladen";
@@ -571,6 +571,31 @@ async function loadModels() {
           pullModel(model.id, el, dlBtn);
         });
         actionsDiv.appendChild(dlBtn);
+      } else if (!isActive) {
+        // Delete button for installed but non-active models
+        const delBtn = document.createElement("button");
+        delBtn.className = "model-del-btn";
+        delBtn.title = "Modell loeschen";
+        delBtn.textContent = "🗑";
+        delBtn.addEventListener("click", async (e) => {
+          e.stopPropagation();
+          delBtn.disabled = true;
+          delBtn.textContent = "...";
+          try {
+            await fetch(apiUrl("/api/models/delete"), {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ model: model.id }),
+            });
+            modelStatusEl.innerHTML = '<span style="color:var(--success)">Modell geloescht!</span>';
+            await loadModels();
+          } catch (err) {
+            modelStatusEl.innerHTML = '<span style="color:var(--recording)">Fehler: ' + escapeHtml(err.message) + '</span>';
+            delBtn.disabled = false;
+            delBtn.textContent = "🗑";
+          }
+        });
+        actionsDiv.appendChild(delBtn);
       }
 
       const vramBadge = document.createElement("span");

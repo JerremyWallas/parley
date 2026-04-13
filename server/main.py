@@ -277,6 +277,32 @@ async def pull_model(data: dict):
     return StreamingResponse(stream_progress(), media_type="text/event-stream")
 
 
+@app.post("/api/models/delete")
+async def delete_model(data: dict):
+    """Delete an Ollama model to free up disk space."""
+    model_id = data.get("model", "").strip()
+    if not model_id:
+        raise HTTPException(400, "Field 'model' is required.")
+
+    # Don't allow deleting the active model
+    prefs = personalization.get_preferences()
+    active = prefs.get("ollama_model", config.OLLAMA_MODEL)
+    if model_id == active:
+        raise HTTPException(400, "Cannot delete the active model. Switch to another model first.")
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.delete(
+                f"{config.OLLAMA_URL}/api/delete",
+                json={"model": model_id},
+            )
+            resp.raise_for_status()
+    except Exception as e:
+        raise HTTPException(500, f"Failed to delete model: {e}")
+
+    return {"status": "ok", "deleted": model_id}
+
+
 # --- WebSocket streaming endpoint ---
 
 @app.websocket("/ws/transcribe")
