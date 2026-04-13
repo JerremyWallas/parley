@@ -550,6 +550,13 @@ section h3 {
   color: var(--text-muted);
 }
 
+.info-tooltip {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  cursor: help;
+  position: relative;
+}
+
 #serverStatus {
   font-size: 0.8rem;
   margin-top: 8px;
