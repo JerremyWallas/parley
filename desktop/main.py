@@ -95,28 +95,41 @@ def handle_send_mode():
         text_inserter.press_enter()
 
     elif send_mode == "voice":
-        listen_seconds = cfg.get("send_listen_seconds", 10)
-        logger.info(f"Voice-send: listening for {listen_seconds}s for 'senden' command...")
+        max_seconds = cfg.get("send_listen_seconds", 10)
+        chunk_seconds = 2
+        logger.info(f"Voice-send: listening in {chunk_seconds}s chunks (max {max_seconds}s)...")
         update_icon(listening=True)
 
-        listen_rec = recorder.AudioRecorder()
-        listen_audio = listen_rec.record_for(listen_seconds)
+        send_triggers = ["senden", "sende", "send", "abschicken", "absenden", "enter"]
+        elapsed = 0
 
-        if listen_audio:
+        while elapsed < max_seconds:
+            listen_rec = recorder.AudioRecorder()
+            listen_audio = listen_rec.record_for(chunk_seconds)
+            elapsed += chunk_seconds
+
+            if not listen_audio:
+                continue
+
             try:
-                # Transcribe with raw mode — we just need the words
                 result = api_client.transcribe(cfg["server_url"], listen_audio, "raw")
                 heard = (result.get("raw_text") or "").lower().strip()
+
+                if not heard:
+                    logger.debug(f"Voice-send chunk {elapsed}s: silence")
+                    continue
+
                 logger.info(f"Voice-send heard: '{heard}'")
 
-                send_triggers = ["senden", "sende", "send", "abschicken", "absenden", "enter"]
                 if any(trigger in heard for trigger in send_triggers):
                     logger.info("Send command detected — pressing Enter")
                     text_inserter.press_enter()
-                else:
-                    logger.info("No send command detected")
+                    break
             except Exception as e:
-                logger.error(f"Voice-send transcription failed: {e}")
+                logger.error(f"Voice-send chunk failed: {e}")
+
+        if elapsed >= max_seconds:
+            logger.info("Voice-send: timeout, no send command detected")
 
         update_icon()
 
