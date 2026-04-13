@@ -199,20 +199,20 @@ async def clear_history():
 # --- Model selection ---
 
 AVAILABLE_MODELS = [
-    {"id": "qwen2.5:3b", "name": "Qwen 2.5 3B", "desc": "Schnell, einfache Aufgaben", "vram": "~2 GB"},
-    {"id": "qwen2.5:7b", "name": "Qwen 2.5 7B", "desc": "Gute Balance aus Qualitaet und Geschwindigkeit", "vram": "~5 GB"},
-    {"id": "qwen2.5:14b", "name": "Qwen 2.5 14B", "desc": "Besseres Textverstaendnis und Reformulierung", "vram": "~10 GB"},
-    {"id": "qwen2.5:32b", "name": "Qwen 2.5 32B", "desc": "Beste Qualitaet, braucht viel Speicher", "vram": "~20 GB"},
-    {"id": "gemma2:2b", "name": "Gemma 2 2B", "desc": "Sehr schnell, Basisqualitaet", "vram": "~2 GB"},
-    {"id": "gemma2:9b", "name": "Gemma 2 9B", "desc": "Gute Qualitaet, kompakt", "vram": "~6 GB"},
-    {"id": "llama3.1:8b", "name": "Llama 3.1 8B", "desc": "Solide Allround-Qualitaet", "vram": "~5 GB"},
-    {"id": "mistral:7b", "name": "Mistral 7B", "desc": "Schnell, gute europaeische Sprachen", "vram": "~5 GB"},
+    {"id": "qwen2.5:3b", "name": "Qwen 2.5 3B", "desc": "Schnell, einfache Aufgaben", "vram": "~2 GB", "vram_mb": 2048},
+    {"id": "qwen2.5:7b", "name": "Qwen 2.5 7B", "desc": "Gute Balance aus Qualitaet und Geschwindigkeit", "vram": "~5 GB", "vram_mb": 5120},
+    {"id": "qwen2.5:14b", "name": "Qwen 2.5 14B", "desc": "Besseres Textverstaendnis und Reformulierung", "vram": "~10 GB", "vram_mb": 10240},
+    {"id": "qwen2.5:32b", "name": "Qwen 2.5 32B", "desc": "Beste Qualitaet, braucht viel Speicher", "vram": "~20 GB", "vram_mb": 20480},
+    {"id": "gemma2:2b", "name": "Gemma 2 2B", "desc": "Sehr schnell, Basisqualitaet", "vram": "~2 GB", "vram_mb": 2048},
+    {"id": "gemma2:9b", "name": "Gemma 2 9B", "desc": "Gute Qualitaet, kompakt", "vram": "~6 GB", "vram_mb": 6144},
+    {"id": "llama3.1:8b", "name": "Llama 3.1 8B", "desc": "Solide Allround-Qualitaet", "vram": "~5 GB", "vram_mb": 5120},
+    {"id": "mistral:7b", "name": "Mistral 7B", "desc": "Schnell, gute europaeische Sprachen", "vram": "~5 GB", "vram_mb": 5120},
 ]
 
 
 @app.get("/api/models")
 async def get_models():
-    """List available models with the currently active one."""
+    """List available models with the currently active one and GPU VRAM info."""
     prefs = personalization.get_preferences()
     active = prefs.get("ollama_model", config.OLLAMA_MODEL)
 
@@ -227,11 +227,25 @@ async def get_models():
     except Exception:
         pass
 
+    # Get GPU total VRAM
+    gpu_total_mb = 0
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0:
+            gpu_total_mb = int(result.stdout.strip())
+    except Exception:
+        pass
+
     models = []
     for m in AVAILABLE_MODELS:
-        models.append({**m, "installed": any(m["id"] in name for name in installed)})
+        fits_gpu = gpu_total_mb >= m["vram_mb"] if gpu_total_mb > 0 else True
+        models.append({**m, "installed": any(m["id"] in name for name in installed), "fits_gpu": fits_gpu})
 
-    return {"models": models, "active": active}
+    return {"models": models, "active": active, "gpu_total_mb": gpu_total_mb}
 
 
 @app.put("/api/models")

@@ -457,6 +457,15 @@ section h3 {
   background: var(--surface-hover);
 }
 
+.model-option.disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.model-option.disabled .model-desc {
+  color: var(--recording);
+}
+
 .model-option .model-info {
   display: flex;
   flex-direction: column;

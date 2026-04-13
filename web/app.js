@@ -547,20 +547,21 @@ async function loadModels() {
     container.innerHTML = "";
     for (const model of data.models) {
       const isActive = model.id === data.active;
+      const tooLarge = model.fits_gpu === false;
       const el = document.createElement("div");
-      el.className = "model-option" + (isActive ? " active" : "");
+      el.className = "model-option" + (isActive ? " active" : "") + (tooLarge ? " disabled" : "");
 
       const infoDiv = document.createElement("div");
       infoDiv.className = "model-info";
       infoDiv.innerHTML = `
         <span class="model-name">${escapeHtml(model.name)}</span>
-        <span class="model-desc">${escapeHtml(model.desc)}</span>
+        <span class="model-desc">${tooLarge ? "Passt nicht in GPU-Speicher" : escapeHtml(model.desc)}</span>
       `;
 
       const actionsDiv = document.createElement("div");
       actionsDiv.className = "model-actions";
 
-      if (!model.installed) {
+      if (!model.installed && !tooLarge) {
         // Download button
         const dlBtn = document.createElement("button");
         dlBtn.className = "model-dl-btn";
@@ -571,7 +572,7 @@ async function loadModels() {
           pullModel(model.id, el, dlBtn);
         });
         actionsDiv.appendChild(dlBtn);
-      } else if (!isActive) {
+      } else if (!isActive && model.installed) {
         // Delete button for installed but non-active models
         const delBtn = document.createElement("button");
         delBtn.className = "model-del-btn";
@@ -606,8 +607,12 @@ async function loadModels() {
       el.appendChild(infoDiv);
       el.appendChild(actionsDiv);
 
-      // Click to activate (only if installed)
+      // Click to activate (only if installed and fits GPU)
       el.addEventListener("click", async () => {
+        if (tooLarge) {
+          modelStatusEl.innerHTML = '<span style="color:var(--text-muted)">Modell passt nicht in den GPU-Speicher.</span>';
+          return;
+        }
         if (!model.installed) {
           modelStatusEl.innerHTML = '<span style="color:var(--text-muted)">Modell muss erst heruntergeladen werden.</span>';
           return;
