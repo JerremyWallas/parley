@@ -206,12 +206,20 @@ header h1 {
 
 .prompt-preset-btn .preset-del {
   display: none;
-  font-size: 0.65rem;
-  color: var(--recording);
-  background: none;
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--recording);
+  color: white;
+  font-size: 0.6rem;
   border: none;
   cursor: pointer;
-  padding: 0 2px;
+  line-height: 18px;
+  text-align: center;
+  z-index: 1;
 }
 
 .prompt-preset-btn:hover .preset-del {

@@ -900,6 +900,25 @@ async function loadPromptEditors() {
   _renderPromptPresets("rephrase", "rephrasePresets", "rephrasePromptText");
 }
 
+function _startRename(nameEl, idx, mode, containerId, textareaId, presets) {
+  const input = document.createElement("input");
+  input.className = "preset-rename-input";
+  input.value = presets[idx].name || "";
+  const _finish = () => {
+    presets[idx].name = input.value.trim() || `Preset ${idx + 1}`;
+    _savePromptPresets();
+    _renderPromptPresets(mode, containerId, textareaId);
+  };
+  input.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter") _finish();
+    else if (ev.key === "Escape") _renderPromptPresets(mode, containerId, textareaId);
+  });
+  input.addEventListener("blur", _finish);
+  nameEl.replaceWith(input);
+  input.focus();
+  input.select();
+}
+
 function _renderPromptPresets(mode, containerId, textareaId) {
   const container = document.getElementById(containerId);
   const textarea = document.getElementById(textareaId);
@@ -914,50 +933,14 @@ function _renderPromptPresets(mode, containerId, textareaId) {
     if (i < presets.length) {
       const idx = i;
 
-      // Name label — double-click to rename
-      const nameEl = document.createElement("span");
-      nameEl.className = "preset-name";
-      nameEl.textContent = presets[i].name || `Preset ${i + 1}`;
-      nameEl.addEventListener("dblclick", (e) => {
-        e.stopPropagation();
-        const input = document.createElement("input");
-        input.className = "preset-rename-input";
-        input.value = presets[idx].name || "";
-        input.addEventListener("keydown", (ev) => {
-          if (ev.key === "Enter") {
-            presets[idx].name = input.value.trim() || `Preset ${idx + 1}`;
-            _savePromptPresets();
-            _renderPromptPresets(mode, containerId, textareaId);
-          } else if (ev.key === "Escape") {
-            _renderPromptPresets(mode, containerId, textareaId);
-          }
-        });
-        input.addEventListener("blur", () => {
-          presets[idx].name = input.value.trim() || `Preset ${idx + 1}`;
-          _savePromptPresets();
-          _renderPromptPresets(mode, containerId, textareaId);
-        });
-        nameEl.replaceWith(input);
-        input.focus();
-        input.select();
-      });
-      btn.appendChild(nameEl);
-
-      // Click to load this preset
-      btn.addEventListener("click", () => {
-        _activePromptPreset[mode] = idx;
-        textarea.value = presets[idx].prompt || "";
-        _renderPromptPresets(mode, containerId, textareaId);
-        _activatePresetOnServer(mode, idx);
-      });
-
-      // Delete button (don't allow deleting the last one)
+      // Delete X button in top-right corner (only if more than 1 preset)
       if (presets.length > 1) {
         const del = document.createElement("button");
         del.className = "preset-del";
-        del.textContent = "Loeschen";
+        del.textContent = "✕";
         del.addEventListener("click", (e) => {
           e.stopPropagation();
+          if (!confirm(`Preset "${presets[idx].name}" wirklich loeschen?`)) return;
           presets.splice(idx, 1);
           if (_activePromptPreset[mode] >= presets.length) _activePromptPreset[mode] = 0;
           textarea.value = presets[_activePromptPreset[mode]]?.prompt || "";
@@ -966,6 +949,46 @@ function _renderPromptPresets(mode, containerId, textareaId) {
         });
         btn.appendChild(del);
       }
+
+      // Name label — click to rename (uses a single-click with timer to distinguish from preset-load)
+      const nameEl = document.createElement("span");
+      nameEl.className = "preset-name";
+      nameEl.textContent = presets[i].name || `Preset ${i + 1}`;
+      btn.appendChild(nameEl);
+
+      // Click on the whole button: load preset. Click on name specifically: rename.
+      let _clickTimer = null;
+      nameEl.addEventListener("click", (e) => {
+        e.stopPropagation();
+        // If already active, go straight to rename
+        if (idx === activeIdx) {
+          _startRename(nameEl, idx, mode, containerId, textareaId, presets);
+          return;
+        }
+        // Otherwise, first click activates, second click renames
+        if (_clickTimer) {
+          clearTimeout(_clickTimer);
+          _clickTimer = null;
+          _startRename(nameEl, idx, mode, containerId, textareaId, presets);
+        } else {
+          _clickTimer = setTimeout(() => {
+            _clickTimer = null;
+            // Single click: activate preset
+            _activePromptPreset[mode] = idx;
+            textarea.value = presets[idx].prompt || "";
+            _renderPromptPresets(mode, containerId, textareaId);
+            _activatePresetOnServer(mode, idx);
+          }, 300);
+        }
+      });
+
+      // Click on button body (not name): always activate
+      btn.addEventListener("click", () => {
+        _activePromptPreset[mode] = idx;
+        textarea.value = presets[idx].prompt || "";
+        _renderPromptPresets(mode, containerId, textareaId);
+        _activatePresetOnServer(mode, idx);
+      });
     } else {
       // Empty slot — click to save current prompt as new preset
       btn.textContent = "+";
