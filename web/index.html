@@ -19,8 +19,12 @@
       <button id="settingsBtn" class="icon-btn" title="Einstellungen">⚙</button>
     </header>
 
-    <!-- Mode selector (dynamically populated from presets) -->
-    <div id="modeSelector"></div>
+    <!-- Mode selector -->
+    <div id="modeSelector">
+      <button class="mode-btn active" data-mode="raw">Raw</button>
+      <button class="mode-btn" data-mode="cleanup">Cleanup</button>
+      <button class="mode-btn" data-mode="rephrase">Reformulieren</button>
+    </div>
 
     <!-- Record button -->
     <div id="recordArea">
@@ -123,19 +127,25 @@
           </section>
 
           <section>
-            <h3>Prompt Presets</h3>
-            <p class="hint">Erstelle eigene Presets fuer verschiedene Anwendungsfaelle.</p>
-            <div id="presetList"></div>
-            <div id="presetForm" class="hidden">
-              <input type="text" id="presetNameInput" placeholder="Name (z.B. WhatsApp, E-Mail...)">
-              <textarea id="presetPromptInput" rows="3" placeholder="Prompt / Anweisung..."></textarea>
-              <div class="preset-form-actions">
-                <button id="presetSaveBtn" class="secondary-btn">Speichern</button>
-                <button id="presetCancelBtn" class="text-btn">Abbrechen</button>
-              </div>
+            <h3>Cleanup-Prompt</h3>
+            <p class="hint">Anweisung fuer den Cleanup-Modus (Fuellwoerter entfernen, bereinigen)</p>
+            <textarea id="cleanupPromptText" rows="3" class="prompt-textarea"></textarea>
+            <div class="prompt-actions">
+              <button id="cleanupPromptSave" class="secondary-btn">Speichern</button>
+              <button id="cleanupPromptReset" class="text-btn">Zuruecksetzen</button>
+              <span id="cleanupPromptStatus"></span>
             </div>
-            <button id="presetAddBtn" class="secondary-btn">+ Neues Preset</button>
-            <div id="presetStatus"></div>
+          </section>
+
+          <section>
+            <h3>Reformulieren-Prompt</h3>
+            <p class="hint">Anweisung fuer den Reformulieren-Modus (Text umformulieren, Kernaussage herausarbeiten)</p>
+            <textarea id="rephrasePromptText" rows="3" class="prompt-textarea"></textarea>
+            <div class="prompt-actions">
+              <button id="rephrasePromptSave" class="secondary-btn">Speichern</button>
+              <button id="rephrasePromptReset" class="text-btn">Zuruecksetzen</button>
+              <span id="rephrasePromptStatus"></span>
+            </div>
           </section>
         </div>
       </div>

@@ -190,6 +190,16 @@ async def set_active_preset(data: dict):
     return {"status": "ok", "active": preset_id}
 
 
+@app.post("/api/presets/{preset_id}/reset")
+async def reset_preset(preset_id: str):
+    """Reset a builtin preset's prompt back to the default."""
+    if preset_id not in cleanup.DEFAULT_PROMPTS:
+        raise HTTPException(400, f"No default prompt for '{preset_id}'.")
+    default_prompt = cleanup.DEFAULT_PROMPTS[preset_id]
+    personalization.update_preset(preset_id, prompt=default_prompt)
+    return {"status": "ok", "prompt": default_prompt}
+
+
 @app.put("/api/presets/{preset_id}")
 async def update_preset(preset_id: str, data: dict):
     """Update an existing preset's name and/or prompt."""
