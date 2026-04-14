@@ -6,6 +6,19 @@ Push-to-Talk mit LLM-Cleanup. Sprich einfach los — der Text landet automatisch
 
 Läuft auf einem **Heimserver mit NVIDIA GPU** und ist von **jedem Gerät** (PC, Handy, Tablet) nutzbar.
 
+## Windows Desktop App installieren
+
+1. **[Parley.exe herunterladen](https://github.com/JerremyWallas/parley/releases/latest)** — aus dem neuesten Release
+2. Starten — Parley erscheint als Icon im System Tray
+3. Server-URL eintragen (Rechtsklick auf Tray-Icon → Einstellungen)
+4. `Ctrl+Shift+Space` halten, sprechen, loslassen — Text landet in der Zwischenablage
+
+> Kein Python noetig. Einfach `.exe` herunterladen und starten.
+
+Alternativ selbst bauen: siehe [Desktop App aus Source bauen](#desktop-windows).
+
+---
+
 ## Features
 
 - **Push-to-Talk** — Taste/Button halten, sprechen, loslassen
@@ -70,10 +83,22 @@ Einfach `https://SERVER-IP:7443` öffnen. Auf Android: **Menü → Zum Startbild
 
 Tray-App mit globalem Hotkey — funktioniert in jedem Programm.
 
+**Fertige `.exe`:** Siehe [Windows Desktop App installieren](#windows-desktop-app-installieren) oben.
+
+**Aus Source starten (Python):**
+
 ```bash
 cd desktop
 pip install -r requirements.txt
 python main.py
+```
+
+**Selbst als `.exe` bauen:**
+
+```bash
+pip install pyinstaller
+pyinstaller build.spec
+# Ergebnis: desktop/dist/Parley.exe
 ```
 
 Standard-Hotkey: `Ctrl+Shift+Space` (halten zum Sprechen).
@@ -87,13 +112,6 @@ Konfiguration liegt in `~/.config/parley/config.json`:
   "mode": "cleanup",
   "auto_paste": true
 }
-```
-
-Als `.exe` bauen (kein Python nötig):
-
-```bash
-pip install pyinstaller
-pyinstaller build.spec
 ```
 
 ### Android Overlay-App

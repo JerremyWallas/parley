@@ -17,6 +17,8 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Migrate old custom_prompts to presets format
+    personalization.migrate_custom_prompts()
     # Preload whisper model on startup
     logger.info("Preloading Whisper model...")
     transcriber.get_model()
