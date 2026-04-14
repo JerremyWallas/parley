@@ -1,13 +1,23 @@
 import io
+import os
 import time
 import logging
 from typing import Generator
 from faster_whisper import WhisperModel
+import config
 from config import WHISPER_MODEL, WHISPER_DEVICE, WHISPER_COMPUTE_TYPE, MODEL_DIR
 
 logger = logging.getLogger(__name__)
 
 _model: WhisperModel | None = None
+
+# Available Whisper models sorted by VRAM requirement, then quality
+AVAILABLE_WHISPER_MODELS = sorted([
+    {"id": "tiny", "name": "Tiny", "desc": "Ultra-schnell, Basisqualitaet", "vram": "~1 GB", "vram_mb": 1024, "quality": 1},
+    {"id": "small", "name": "Small", "desc": "Schnell, gute Qualitaet", "vram": "~2 GB", "vram_mb": 2048, "quality": 2},
+    {"id": "medium", "name": "Medium", "desc": "Ausgewogen, sehr gute Qualitaet", "vram": "~5 GB", "vram_mb": 5120, "quality": 3},
+    {"id": "large-v3", "name": "Large V3", "desc": "Beste Qualitaet, langsamer", "vram": "~6 GB", "vram_mb": 6144, "quality": 4},
+], key=lambda m: (m["vram_mb"], m["quality"]))
 
 
 def _detect_compute_type() -> str:
@@ -46,13 +56,36 @@ def _detect_compute_type() -> str:
         return "int8_float32"
 
 
+def set_model(model_name: str) -> None:
+    """Unload current model and set the new model name for next load."""
+    global _model
+    config.WHISPER_MODEL = model_name
+    _model = None
+    logger.info(f"Whisper model switched to '{model_name}' (will load on next transcription)")
+
+
+def list_models(gpu_total_mb: int = 0) -> list[dict]:
+    """Return available models with installed and fits_gpu flags."""
+    result = []
+    for m in AVAILABLE_WHISPER_MODELS:
+        model_dir = os.path.join(str(MODEL_DIR), f"models--Systran--faster-whisper-{m['id']}")
+        installed = os.path.isdir(model_dir)
+        fits_gpu = gpu_total_mb >= m["vram_mb"] if gpu_total_mb > 0 else True
+        result.append({**m, "installed": installed, "fits_gpu": fits_gpu})
+    return result
+
+
 def get_model() -> WhisperModel:
     global _model
     if _model is None:
+        import personalization
+        prefs = personalization.get_preferences()
+        model_name = prefs.get("whisper_model", WHISPER_MODEL)
+
         compute_type = _detect_compute_type()
-        logger.info(f"Loading Whisper model '{WHISPER_MODEL}' on {WHISPER_DEVICE} ({compute_type})...")
+        logger.info(f"Loading Whisper model '{model_name}' on {WHISPER_DEVICE} ({compute_type})...")
         _model = WhisperModel(
-            WHISPER_MODEL,
+            model_name,
             device=WHISPER_DEVICE,
             compute_type=compute_type,
             download_root=str(MODEL_DIR),

@@ -380,6 +380,50 @@ async def delete_model(data: dict):
     return {"status": "ok", "deleted": model_id}
 
 
+# --- Whisper model selection ---
+
+@app.get("/api/whisper-models")
+async def get_whisper_models():
+    """List available Whisper models with the currently active one and GPU VRAM info."""
+    prefs = personalization.get_preferences()
+    active = prefs.get("whisper_model", config.WHISPER_MODEL)
+
+    # Get GPU total VRAM
+    gpu_total_mb = 0
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0:
+            gpu_total_mb = int(result.stdout.strip())
+    except Exception:
+        pass
+
+    return {
+        "models": transcriber.list_models(gpu_total_mb),
+        "active": active,
+        "gpu_total_mb": gpu_total_mb,
+    }
+
+
+@app.put("/api/whisper-models")
+async def set_whisper_model(data: dict):
+    """Set the active Whisper model (unloads current model)."""
+    model_id = data.get("model", "").strip()
+    if not model_id:
+        raise HTTPException(400, "Field 'model' is required.")
+
+    prefs = personalization.get_preferences()
+    prefs["whisper_model"] = model_id
+    personalization.save_preferences(prefs)
+
+    transcriber.set_model(model_id)
+
+    return {"active": model_id}
+
+
 # --- WebSocket streaming endpoint ---
 
 @app.websocket("/ws/transcribe")
