@@ -197,3 +197,133 @@ def _truncate_history():
         with open(HISTORY_FILE, "w", encoding="utf-8") as f:
             f.writelines(lines[-MAX_HISTORY:])
         logger.info(f"Truncated history to last {MAX_HISTORY} entries")
+
+
+# --- Presets ---
+
+def _get_default_prompts():
+    """Import DEFAULT_PROMPTS from cleanup (deferred to avoid circular imports)."""
+    from cleanup import DEFAULT_PROMPTS
+    return DEFAULT_PROMPTS
+
+
+def _default_presets() -> list[dict]:
+    """Return the two builtin presets using default prompt texts."""
+    prompts = _get_default_prompts()
+    return [
+        {"id": "cleanup", "name": "Cleanup", "prompt": prompts["cleanup"], "builtin": True},
+        {"id": "rephrase", "name": "Rephrase", "prompt": prompts["rephrase"], "builtin": True},
+    ]
+
+
+def get_presets() -> list[dict]:
+    """Return the list of presets from preferences, initializing with defaults if missing."""
+    prefs = get_preferences()
+    if "presets" not in prefs:
+        prefs["presets"] = _default_presets()
+        save_preferences(prefs)
+    return prefs["presets"]
+
+
+def get_active_preset_id() -> str:
+    """Return the active preset ID from preferences (default: 'cleanup')."""
+    prefs = get_preferences()
+    return prefs.get("active_preset", "cleanup")
+
+
+def set_active_preset(preset_id: str):
+    """Save the active preset ID to preferences."""
+    prefs = get_preferences()
+    prefs["active_preset"] = preset_id
+    save_preferences(prefs)
+
+
+def _generate_preset_id(name: str, existing_ids: set[str]) -> str:
+    """Generate a unique ID from a name: lowercase, spaces to hyphens, deduplicate."""
+    base = name.lower().replace(" ", "-")
+    candidate = base
+    counter = 2
+    while candidate in existing_ids:
+        candidate = f"{base}-{counter}"
+        counter += 1
+    return candidate
+
+
+def add_preset(name: str, prompt: str) -> dict:
+    """Create a new preset with an auto-generated unique ID. Returns the new preset."""
+    prefs = get_preferences()
+    presets = prefs.get("presets", _default_presets())
+    existing_ids = {p["id"] for p in presets}
+    preset_id = _generate_preset_id(name, existing_ids)
+    preset = {"id": preset_id, "name": name, "prompt": prompt, "builtin": False}
+    presets.append(preset)
+    prefs["presets"] = presets
+    save_preferences(prefs)
+    logger.info(f"Added preset '{name}' with id '{preset_id}'")
+    return preset
+
+
+def update_preset(preset_id: str, name: str | None = None, prompt: str | None = None) -> dict | None:
+    """Update name and/or prompt of an existing preset. Returns updated preset or None if not found."""
+    prefs = get_preferences()
+    presets = prefs.get("presets", _default_presets())
+    for preset in presets:
+        if preset["id"] == preset_id:
+            if name is not None:
+                preset["name"] = name
+            if prompt is not None:
+                preset["prompt"] = prompt
+            prefs["presets"] = presets
+            save_preferences(prefs)
+            logger.info(f"Updated preset '{preset_id}'")
+            return preset
+    return None
+
+
+def delete_preset(preset_id: str) -> bool:
+    """Delete a preset. Refuses if builtin. Resets active preset if the deleted one was active. Returns success."""
+    prefs = get_preferences()
+    presets = prefs.get("presets", _default_presets())
+    for preset in presets:
+        if preset["id"] == preset_id:
+            if preset.get("builtin"):
+                logger.warning(f"Cannot delete builtin preset '{preset_id}'")
+                return False
+            presets.remove(preset)
+            prefs["presets"] = presets
+            if prefs.get("active_preset") == preset_id:
+                prefs["active_preset"] = "cleanup"
+                logger.info(f"Reset active preset to 'cleanup' after deleting '{preset_id}'")
+            save_preferences(prefs)
+            logger.info(f"Deleted preset '{preset_id}'")
+            return True
+    return False
+
+
+def migrate_custom_prompts():
+    """One-time migration: convert old custom_prompts dict to new presets format.
+
+    Safe to call multiple times — no-op if presets already exist or no custom_prompts found.
+    """
+    prefs = get_preferences()
+
+    # Already migrated or fresh install
+    if "presets" in prefs:
+        return
+
+    custom_prompts = prefs.get("custom_prompts", {})
+    presets = _default_presets()
+
+    # Override builtin prompts with any custom ones
+    for preset in presets:
+        if preset["id"] in custom_prompts:
+            preset["prompt"] = custom_prompts[preset["id"]]
+
+    prefs["presets"] = presets
+
+    # Clean up old key
+    if "custom_prompts" in prefs:
+        del prefs["custom_prompts"]
+
+    save_preferences(prefs)
+    logger.info("Migrated custom_prompts to presets format")
