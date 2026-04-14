@@ -436,6 +436,48 @@ async def set_whisper_model(data: dict):
     return {"active": model_id}
 
 
+@app.post("/api/whisper-models/pull")
+async def pull_whisper_model(data: dict):
+    """Download a Whisper model with SSE status updates."""
+    import asyncio
+    model_id = data.get("model", "").strip()
+    if not model_id:
+        raise HTTPException(400, "Field 'model' is required.")
+
+    async def stream_progress():
+        yield f"data: {json.dumps({'status': 'downloading', 'message': f'Downloading {model_id}...'})}\n\n"
+        try:
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, transcriber.download_model, model_id)
+            yield f"data: {json.dumps({'status': 'success', 'message': f'Model {model_id} ready'})}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'status': 'error', 'message': str(e)})}\n\n"
+
+    return StreamingResponse(stream_progress(), media_type="text/event-stream")
+
+
+@app.post("/api/whisper-models/delete")
+async def delete_whisper_model(data: dict):
+    """Delete a cached Whisper model from disk."""
+    model_id = data.get("model", "").strip()
+    if not model_id:
+        raise HTTPException(400, "Field 'model' is required.")
+
+    prefs = personalization.get_preferences()
+    active = prefs.get("whisper_model", config.WHISPER_MODEL)
+    if model_id == active:
+        raise HTTPException(400, "Cannot delete the active model. Switch to another model first.")
+
+    try:
+        transcriber.delete_model(model_id)
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e))
+    except Exception as e:
+        raise HTTPException(500, f"Failed to delete model: {e}")
+
+    return {"status": "ok", "deleted": model_id}
+
+
 # --- WebSocket streaming endpoint ---
 
 @app.websocket("/ws/transcribe")

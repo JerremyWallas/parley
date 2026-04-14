@@ -1,4 +1,4 @@
-const CACHE_NAME = "stt-v1";
+const CACHE_NAME = "stt-v2";
 const ASSETS = ["/", "/index.html", "/app.js", "/style.css", "/manifest.json"];
 
 self.addEventListener("install", (event) => {
@@ -20,21 +20,21 @@ self.addEventListener("activate", (event) => {
 self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
 
-  // Don't cache API calls
-  if (url.pathname.startsWith("/api/")) {
+  // Don't cache API calls or WebSocket
+  if (url.pathname.startsWith("/api/") || url.pathname.startsWith("/ws/")) {
     return;
   }
 
+  // Network-first: always try fresh version, fall back to cache offline
   event.respondWith(
-    caches.match(event.request).then((cached) => {
-      const fetchPromise = fetch(event.request).then((response) => {
+    fetch(event.request)
+      .then((response) => {
         if (response.ok) {
           const clone = response.clone();
           caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
         }
         return response;
-      });
-      return cached || fetchPromise;
-    })
+      })
+      .catch(() => caches.match(event.request))
   );
 });

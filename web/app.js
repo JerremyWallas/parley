@@ -740,6 +740,44 @@ async function loadWhisperModels() {
       const actionsDiv = document.createElement("div");
       actionsDiv.className = "model-actions";
 
+      if (!model.installed && !tooLarge) {
+        // Download button
+        const dlBtn = document.createElement("button");
+        dlBtn.className = "model-dl-btn";
+        dlBtn.title = "Modell herunterladen";
+        dlBtn.textContent = "\u2B07";
+        dlBtn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          pullWhisperModel(model.id, el, dlBtn);
+        });
+        actionsDiv.appendChild(dlBtn);
+      } else if (!isActive && model.installed) {
+        // Delete button for installed but non-active models
+        const delBtn = document.createElement("button");
+        delBtn.className = "model-del-btn";
+        delBtn.title = "Modell loeschen";
+        delBtn.textContent = "\uD83D\uDDD1";
+        delBtn.addEventListener("click", async (e) => {
+          e.stopPropagation();
+          delBtn.disabled = true;
+          delBtn.textContent = "...";
+          try {
+            await fetch(apiUrl("/api/whisper-models/delete"), {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ model: model.id }),
+            });
+            statusEl.innerHTML = '<span style="color:var(--success)">Modell geloescht!</span>';
+            await loadWhisperModels();
+          } catch (err) {
+            statusEl.innerHTML = '<span style="color:var(--recording)">Fehler: ' + escapeHtml(err.message) + '</span>';
+            delBtn.disabled = false;
+            delBtn.textContent = "\uD83D\uDDD1";
+          }
+        });
+        actionsDiv.appendChild(delBtn);
+      }
+
       const vramBadge = document.createElement("span");
       vramBadge.className = "model-vram";
       vramBadge.textContent = model.vram;
@@ -748,9 +786,14 @@ async function loadWhisperModels() {
       el.appendChild(infoDiv);
       el.appendChild(actionsDiv);
 
+      // Click to activate (only if installed and fits GPU)
       el.addEventListener("click", async () => {
         if (tooLarge) {
           statusEl.innerHTML = '<span style="color:var(--text-muted)">Modell passt nicht in den GPU-Speicher.</span>';
+          return;
+        }
+        if (!model.installed) {
+          statusEl.innerHTML = '<span style="color:var(--text-muted)">Modell muss erst heruntergeladen werden.</span>';
           return;
         }
         try {
@@ -759,7 +802,7 @@ async function loadWhisperModels() {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ model: model.id }),
           });
-          statusEl.innerHTML = '<span style="color:var(--success)">Modell wird beim naechsten Gebrauch geladen</span>';
+          statusEl.innerHTML = '<span style="color:var(--success)">Modell gewechselt!</span>';
           await loadWhisperModels();
         } catch (err) {
           statusEl.innerHTML = '<span style="color:var(--recording)">Fehler: ' + escapeHtml(err.message) + '</span>';
@@ -770,6 +813,65 @@ async function loadWhisperModels() {
     }
   } catch {
     container.innerHTML = '<p style="color:var(--text-muted);font-size:0.85rem">Server nicht erreichbar</p>';
+  }
+}
+
+async function pullWhisperModel(modelId, optionEl, dlBtn) {
+  // Replace download button with pulsing progress bar
+  dlBtn.remove();
+  const progressWrap = document.createElement("div");
+  progressWrap.className = "model-progress-wrap";
+  progressWrap.innerHTML = `
+    <div class="model-progress-bar"><div class="model-progress-fill pulsing" style="width:100%"></div></div>
+    <span class="model-progress-text">Wird heruntergeladen...</span>
+  `;
+  optionEl.querySelector(".model-actions").prepend(progressWrap);
+
+  const text = progressWrap.querySelector(".model-progress-text");
+  const statusEl = document.getElementById("whisperModelStatus");
+
+  try {
+    const resp = await fetch(apiUrl("/api/whisper-models/pull"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: modelId }),
+    });
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop();
+
+      for (const line of lines) {
+        if (!line.startsWith("data: ")) continue;
+        const data = JSON.parse(line.slice(6));
+
+        if (data.status === "error") {
+          text.textContent = "Fehler";
+          statusEl.innerHTML = '<span style="color:var(--recording)">Download fehlgeschlagen: ' + escapeHtml(data.message) + '</span>';
+          return;
+        }
+
+        if (data.status === "success") {
+          text.textContent = "Fertig!";
+          statusEl.innerHTML = '<span style="color:var(--success)">Download abgeschlossen!</span>';
+          setTimeout(() => loadWhisperModels(), 1000);
+          return;
+        }
+
+        text.textContent = data.message || "Wird heruntergeladen...";
+      }
+    }
+  } catch (err) {
+    text.textContent = "Fehler";
+    statusEl.innerHTML = '<span style="color:var(--recording)">Download fehlgeschlagen</span>';
   }
 }
 

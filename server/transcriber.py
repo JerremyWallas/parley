@@ -64,6 +64,32 @@ def set_model(model_name: str) -> None:
     logger.info(f"Whisper model switched to '{model_name}' (will load on next transcription)")
 
 
+def download_model(model_name: str) -> None:
+    """Download a Whisper model by loading it, then unload to free VRAM."""
+    compute_type = _detect_compute_type()
+    logger.info(f"Downloading Whisper model '{model_name}'...")
+    m = WhisperModel(
+        model_name,
+        device=WHISPER_DEVICE,
+        compute_type=compute_type,
+        download_root=str(MODEL_DIR),
+    )
+    # Unload immediately — we just wanted the download
+    del m
+    logger.info(f"Whisper model '{model_name}' downloaded and cached.")
+
+
+def delete_model(model_name: str) -> None:
+    """Delete a cached Whisper model from disk."""
+    import shutil
+    model_dir = os.path.join(str(MODEL_DIR), f"models--Systran--faster-whisper-{model_name}")
+    if os.path.isdir(model_dir):
+        shutil.rmtree(model_dir)
+        logger.info(f"Deleted Whisper model '{model_name}' from {model_dir}")
+    else:
+        raise FileNotFoundError(f"Model directory not found: {model_dir}")
+
+
 def list_models(gpu_total_mb: int = 0) -> list[dict]:
     """Return available models with installed and fits_gpu flags."""
     result = []

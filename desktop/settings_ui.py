@@ -127,9 +127,7 @@ class SettingsWindow:
     def show(self):
         self.win = tk.Tk()
         self.win.title("Parley")
-        self.win.geometry("480x620")
-        self.win.minsize(400, 500)
-        self.win.resizable(True, True)
+        self.win.resizable(False, False)
         self.win.configure(bg=BG)
 
         # Window icon
@@ -153,28 +151,8 @@ class SettingsWindow:
         tk.Label(title_frame, text="Einstellungen", font=(FONT, FONT_SMALL),
                  bg=BG, fg=TEXT_MUTED).pack(anchor="w")
 
-        # Scrollable content area
-        canvas = tk.Canvas(self.win, bg=BG, highlightthickness=0)
-        scrollbar = tk.Scrollbar(self.win, orient="vertical", command=canvas.yview)
-        canvas.configure(yscrollcommand=scrollbar.set)
-        scrollbar.pack(side="right", fill="y")
-        canvas.pack(side="left", fill="both", expand=True)
-
-        content = tk.Frame(canvas, bg=BG)
-        content_window = canvas.create_window((0, 0), window=content, anchor="nw")
-
-        def _on_configure(event=None):
-            canvas.configure(scrollregion=canvas.bbox("all"))
-            canvas.itemconfig(content_window, width=canvas.winfo_width())
-
-        content.bind("<Configure>", _on_configure)
-        canvas.bind("<Configure>", _on_configure)
-
-        # Mouse wheel scrolling
-        def _on_mousewheel(event):
-            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-
-        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+        content = tk.Frame(self.win, bg=BG)
+        content.pack(fill="x")
 
         # --- Server URL section ---
         sec = self._make_section(content, "Server")
@@ -271,6 +249,16 @@ class SettingsWindow:
 
         save_btn = self._make_button(btn_frame, "Speichern", self._save, primary=True)
         save_btn.pack(fill="x")
+
+        # Set fixed width, let height auto-size, then center on screen
+        self.win.update_idletasks()
+        win_w = 480
+        win_h = self.win.winfo_reqheight()
+        screen_w = self.win.winfo_screenwidth()
+        screen_h = self.win.winfo_screenheight()
+        x = (screen_w - win_w) // 2
+        y = (screen_h - win_h) // 2
+        self.win.geometry(f"{win_w}x{win_h}+{x}+{y}")
 
         self.win.mainloop()
 

@@ -634,6 +634,15 @@ section h3 {
   transition: width 0.3s ease;
 }
 
+.model-progress-fill.pulsing {
+  animation: pulse-progress 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse-progress {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}
+
 .model-progress-text {
   font-size: 0.7rem;
   color: var(--text-muted);
