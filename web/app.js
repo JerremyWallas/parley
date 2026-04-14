@@ -914,11 +914,40 @@ function _renderPromptPresets(mode, containerId, textareaId) {
   for (let i = 0; i < MAX_PROMPT_PRESETS; i++) {
     const btn = document.createElement("div");
     btn.className = "prompt-preset-btn" + (i === activeIdx ? " active" : "") + (i >= presets.length ? " empty" : "");
-    btn.textContent = i < presets.length ? (presets[i].name || `Preset ${i + 1}`) : "+";
 
     if (i < presets.length) {
-      // Click to load this preset
       const idx = i;
+
+      // Name label — double-click to rename
+      const nameEl = document.createElement("span");
+      nameEl.className = "preset-name";
+      nameEl.textContent = presets[i].name || `Preset ${i + 1}`;
+      nameEl.addEventListener("dblclick", (e) => {
+        e.stopPropagation();
+        const input = document.createElement("input");
+        input.className = "preset-rename-input";
+        input.value = presets[idx].name || "";
+        input.addEventListener("keydown", (ev) => {
+          if (ev.key === "Enter") {
+            presets[idx].name = input.value.trim() || `Preset ${idx + 1}`;
+            _savePromptPresets();
+            _renderPromptPresets(mode, containerId, textareaId);
+          } else if (ev.key === "Escape") {
+            _renderPromptPresets(mode, containerId, textareaId);
+          }
+        });
+        input.addEventListener("blur", () => {
+          presets[idx].name = input.value.trim() || `Preset ${idx + 1}`;
+          _savePromptPresets();
+          _renderPromptPresets(mode, containerId, textareaId);
+        });
+        nameEl.replaceWith(input);
+        input.focus();
+        input.select();
+      });
+      btn.appendChild(nameEl);
+
+      // Click to load this preset
       btn.addEventListener("click", () => {
         _activePromptPreset[mode] = idx;
         textarea.value = presets[idx].prompt || "";
@@ -930,7 +959,7 @@ function _renderPromptPresets(mode, containerId, textareaId) {
       if (presets.length > 1) {
         const del = document.createElement("button");
         del.className = "preset-del";
-        del.textContent = "✕";
+        del.textContent = "Loeschen";
         del.addEventListener("click", (e) => {
           e.stopPropagation();
           presets.splice(idx, 1);
@@ -943,6 +972,7 @@ function _renderPromptPresets(mode, containerId, textareaId) {
       }
     } else {
       // Empty slot — click to save current prompt as new preset
+      btn.textContent = "+";
       btn.addEventListener("click", () => {
         const prompt = textarea.value.trim();
         if (!prompt) return;
