@@ -23,7 +23,6 @@ const correctionStatus = document.getElementById("correctionStatus");
 const settingsBtn = document.getElementById("settingsBtn");
 const settingsModal = document.getElementById("settingsModal");
 const closeSettings = document.getElementById("closeSettings");
-const modeButtons = document.querySelectorAll(".mode-btn");
 const historyList = document.getElementById("historyList");
 const clearHistory = document.getElementById("clearHistory");
 const canvas = document.getElementById("waveform");
@@ -52,79 +51,66 @@ async function apiGet(path) {
   return resp.json();
 }
 
-// --- Mode selector + prompt editor ---
-const promptEditor = document.getElementById("promptEditor");
-const promptText = document.getElementById("promptText");
-const promptSaveBtn = document.getElementById("promptSaveBtn");
-const promptResetBtn = document.getElementById("promptResetBtn");
-const promptStatus = document.getElementById("promptStatus");
-let promptDefaults = {};
-let promptCustom = {};
-
+// --- Mode selector (dynamic from presets) ---
 function setMode(mode) {
   currentMode = mode;
   localStorage.setItem("stt-mode", mode);
-  modeButtons.forEach(btn => {
+  document.querySelectorAll(".mode-btn").forEach(btn => {
     btn.classList.toggle("active", btn.dataset.mode === mode);
   });
-
-  // Show/hide prompt editor
-  if (mode === "cleanup" || mode === "rephrase") {
-    promptEditor.classList.remove("hidden");
-    promptText.value = promptCustom[mode] || promptDefaults[mode] || "";
-    promptStatus.textContent = "";
-  } else {
-    promptEditor.classList.add("hidden");
-  }
 }
 
-async function loadPrompts() {
+async function loadModeButtons() {
+  const container = document.getElementById("modeSelector");
+  container.innerHTML = "";
+
+  // Always add Raw button first
+  const rawBtn = document.createElement("button");
+  rawBtn.className = "mode-btn" + (currentMode === "raw" ? " active" : "");
+  rawBtn.dataset.mode = "raw";
+  rawBtn.textContent = "Raw";
+  rawBtn.addEventListener("click", () => {
+    setMode("raw");
+    fetch(apiUrl("/api/presets/active"), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ preset: "raw" }),
+    }).catch(() => {});
+  });
+  container.appendChild(rawBtn);
+
   try {
-    const data = await apiGet("/api/prompts");
-    promptDefaults = { cleanup: data.cleanup_default, rephrase: data.rephrase_default };
-    promptCustom = { cleanup: data.cleanup || "", rephrase: data.rephrase || "" };
-    // Update textarea if a mode with prompt is active
-    if (currentMode === "cleanup" || currentMode === "rephrase") {
-      promptText.value = promptCustom[currentMode] || promptDefaults[currentMode] || "";
+    const data = await apiGet("/api/presets");
+    const presets = data.presets || [];
+    for (const preset of presets) {
+      const btn = document.createElement("button");
+      btn.className = "mode-btn" + (currentMode === preset.id ? " active" : "");
+      btn.dataset.mode = preset.id;
+      btn.textContent = preset.name;
+      btn.addEventListener("click", () => {
+        setMode(preset.id);
+        fetch(apiUrl("/api/presets/active"), {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ preset: preset.id }),
+        }).catch(() => {});
+      });
+      container.appendChild(btn);
     }
   } catch { /* ignore if server unreachable */ }
 }
 
-promptSaveBtn.addEventListener("click", async () => {
-  const val = promptText.value.trim();
-  promptCustom[currentMode] = val;
-  try {
-    await fetch(apiUrl("/api/prompts"), {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ [currentMode]: val }),
-    });
-    promptStatus.textContent = "Gespeichert!";
-    setTimeout(() => { promptStatus.textContent = ""; }, 2000);
-  } catch (err) {
-    promptStatus.textContent = "Fehler: " + err.message;
-  }
-});
+loadModeButtons();
 
-promptResetBtn.addEventListener("click", async () => {
-  promptText.value = promptDefaults[currentMode] || "";
-  promptCustom[currentMode] = "";
-  try {
-    await fetch(apiUrl("/api/prompts"), {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ [currentMode]: "" }),
-    });
-    promptStatus.textContent = "Zurueckgesetzt!";
-    setTimeout(() => { promptStatus.textContent = ""; }, 2000);
-  } catch { /* ignore */ }
+// --- Tab switching ---
+document.querySelectorAll(".tab-btn").forEach(btn => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
+    document.querySelectorAll(".tab-panel").forEach(p => p.classList.remove("active"));
+    btn.classList.add("active");
+    document.getElementById("tab-" + btn.dataset.tab).classList.add("active");
+  });
 });
-
-modeButtons.forEach(btn => {
-  btn.addEventListener("click", () => setMode(btn.dataset.mode));
-});
-setMode(currentMode);
-loadPrompts();
 
 // --- WebSocket streaming ---
 function getOpusMimeType() {
@@ -220,7 +206,7 @@ function stopRecording() {
 
   // Send stop signal via WebSocket
   if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ type: "stop", mode: currentMode }));
+    ws.send(JSON.stringify({ type: "stop", mode: currentMode, preset: currentMode }));
   }
 }
 
@@ -539,6 +525,8 @@ async function loadSettings() {
 
   checkServer();
   loadModels();
+  loadWhisperModels();
+  loadPresets();
 
   try {
     const data = await apiGet("/api/glossary");
@@ -762,6 +750,192 @@ async function pullModel(modelId, optionEl, dlBtn) {
     modelStatusEl.innerHTML = '<span style="color:var(--recording)">Download fehlgeschlagen</span>';
   }
 }
+
+// Whisper model selector
+async function loadWhisperModels() {
+  const container = document.getElementById("whisperModelSelector");
+  const statusEl = document.getElementById("whisperModelStatus");
+  statusEl.innerHTML = "";
+  try {
+    const data = await apiGet("/api/whisper-models");
+    container.innerHTML = "";
+    for (const model of data.models) {
+      const isActive = model.id === data.active;
+      const tooLarge = model.fits_gpu === false;
+      const el = document.createElement("div");
+      el.className = "model-option" + (isActive ? " active" : "") + (tooLarge ? " disabled" : "");
+
+      const infoDiv = document.createElement("div");
+      infoDiv.className = "model-info";
+      infoDiv.innerHTML = `
+        <span class="model-name">${escapeHtml(model.name)}</span>
+        <span class="model-desc">${tooLarge ? "Passt nicht in GPU-Speicher" : escapeHtml(model.desc)}</span>
+      `;
+
+      const actionsDiv = document.createElement("div");
+      actionsDiv.className = "model-actions";
+
+      const vramBadge = document.createElement("span");
+      vramBadge.className = "model-vram";
+      vramBadge.textContent = model.vram;
+      actionsDiv.appendChild(vramBadge);
+
+      el.appendChild(infoDiv);
+      el.appendChild(actionsDiv);
+
+      el.addEventListener("click", async () => {
+        if (tooLarge) {
+          statusEl.innerHTML = '<span style="color:var(--text-muted)">Modell passt nicht in den GPU-Speicher.</span>';
+          return;
+        }
+        try {
+          await fetch(apiUrl("/api/whisper-models"), {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ model: model.id }),
+          });
+          statusEl.innerHTML = '<span style="color:var(--success)">Modell wird beim naechsten Gebrauch geladen</span>';
+          await loadWhisperModels();
+        } catch (err) {
+          statusEl.innerHTML = '<span style="color:var(--recording)">Fehler: ' + escapeHtml(err.message) + '</span>';
+        }
+      });
+
+      container.appendChild(el);
+    }
+  } catch {
+    container.innerHTML = '<p style="color:var(--text-muted);font-size:0.85rem">Server nicht erreichbar</p>';
+  }
+}
+
+// Preset management
+let editingPresetId = null;
+
+async function loadPresets() {
+  const container = document.getElementById("presetList");
+  const statusEl = document.getElementById("presetStatus");
+  try {
+    const data = await apiGet("/api/presets");
+    const presets = data.presets || [];
+    const activePreset = data.active || null;
+    container.innerHTML = "";
+    for (const preset of presets) {
+      const card = document.createElement("div");
+      card.className = "preset-card" + (preset.id === activePreset ? " active" : "");
+
+      const header = document.createElement("div");
+      header.className = "preset-header";
+
+      const name = document.createElement("span");
+      name.className = "preset-name";
+      name.textContent = preset.name;
+
+      const actions = document.createElement("div");
+      actions.className = "preset-actions";
+
+      const editBtn = document.createElement("button");
+      editBtn.textContent = "✏";
+      editBtn.title = "Bearbeiten";
+      editBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        editingPresetId = preset.id;
+        document.getElementById("presetNameInput").value = preset.name;
+        document.getElementById("presetPromptInput").value = preset.prompt || "";
+        document.getElementById("presetForm").classList.remove("hidden");
+      });
+      actions.appendChild(editBtn);
+
+      if (!preset.builtin) {
+        const delBtn = document.createElement("button");
+        delBtn.textContent = "🗑";
+        delBtn.title = "Loeschen";
+        delBtn.addEventListener("click", async (e) => {
+          e.stopPropagation();
+          try {
+            await fetch(apiUrl("/api/presets/" + preset.id), { method: "DELETE" });
+            await loadPresets();
+            await loadModeButtons();
+          } catch (err) {
+            statusEl.textContent = "Fehler: " + err.message;
+          }
+        });
+        actions.appendChild(delBtn);
+      }
+
+      header.appendChild(name);
+      header.appendChild(actions);
+      card.appendChild(header);
+
+      if (preset.prompt) {
+        const preview = document.createElement("div");
+        preview.className = "preset-preview";
+        preview.textContent = preset.prompt.substring(0, 80);
+        card.appendChild(preview);
+      }
+
+      card.addEventListener("click", async () => {
+        try {
+          await fetch(apiUrl("/api/presets/active"), {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ preset: preset.id }),
+          });
+          setMode(preset.id);
+          await loadPresets();
+          await loadModeButtons();
+        } catch (err) {
+          statusEl.textContent = "Fehler: " + err.message;
+        }
+      });
+
+      container.appendChild(card);
+    }
+  } catch {
+    container.innerHTML = '<p style="color:var(--text-muted);font-size:0.85rem">Server nicht erreichbar</p>';
+  }
+}
+
+document.getElementById("presetAddBtn").addEventListener("click", () => {
+  editingPresetId = null;
+  document.getElementById("presetNameInput").value = "";
+  document.getElementById("presetPromptInput").value = "";
+  document.getElementById("presetForm").classList.remove("hidden");
+});
+
+document.getElementById("presetCancelBtn").addEventListener("click", () => {
+  document.getElementById("presetForm").classList.add("hidden");
+  editingPresetId = null;
+});
+
+document.getElementById("presetSaveBtn").addEventListener("click", async () => {
+  const name = document.getElementById("presetNameInput").value.trim();
+  const prompt = document.getElementById("presetPromptInput").value.trim();
+  const statusEl = document.getElementById("presetStatus");
+  if (!name) { statusEl.textContent = "Name ist erforderlich"; return; }
+  try {
+    if (editingPresetId) {
+      await fetch(apiUrl("/api/presets/" + editingPresetId), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, prompt }),
+      });
+    } else {
+      await fetch(apiUrl("/api/presets"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, prompt }),
+      });
+    }
+    document.getElementById("presetForm").classList.add("hidden");
+    editingPresetId = null;
+    statusEl.textContent = "Gespeichert!";
+    setTimeout(() => { statusEl.textContent = ""; }, 2000);
+    await loadPresets();
+    await loadModeButtons();
+  } catch (err) {
+    statusEl.textContent = "Fehler: " + err.message;
+  }
+});
 
 // Server URL
 document.getElementById("saveServerUrl").addEventListener("click", () => {

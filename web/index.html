@@ -19,23 +19,8 @@
       <button id="settingsBtn" class="icon-btn" title="Einstellungen">⚙</button>
     </header>
 
-    <!-- Mode selector -->
-    <div id="modeSelector">
-      <button class="mode-btn active" data-mode="raw">Raw</button>
-      <button class="mode-btn" data-mode="cleanup">Cleanup</button>
-      <button class="mode-btn" data-mode="rephrase">Reformulieren</button>
-    </div>
-
-    <!-- Prompt editor (visible for cleanup/rephrase) -->
-    <div id="promptEditor" class="hidden">
-      <div class="prompt-header">
-        <span class="prompt-label">Anweisung</span>
-        <button id="promptResetBtn" class="text-btn" title="Auf Standard zuruecksetzen">Zuruecksetzen</button>
-      </div>
-      <textarea id="promptText" rows="3" placeholder="Eigene Anweisung fuer die Textverarbeitung..."></textarea>
-      <button id="promptSaveBtn" class="secondary-btn prompt-save-btn">Speichern</button>
-      <span id="promptStatus"></span>
-    </div>
+    <!-- Mode selector (dynamically populated from presets) -->
+    <div id="modeSelector"></div>
 
     <!-- Record button -->
     <div id="recordArea">
@@ -88,36 +73,71 @@
           <button id="closeSettings" class="icon-btn">✕</button>
         </div>
 
-        <section>
-          <h3>LLM-Modell</h3>
-          <p class="hint">Modell fuer Cleanup und Reformulieren. Groessere Modelle liefern bessere Ergebnisse, brauchen aber mehr VRAM.</p>
-          <div id="modelSelector" class="model-list"></div>
-          <div id="modelStatus"></div>
-        </section>
+        <div class="tab-bar">
+          <button class="tab-btn active" data-tab="general">Allgemein</button>
+          <button class="tab-btn" data-tab="transcription">Transkription</button>
+          <button class="tab-btn" data-tab="processing">Textverarbeitung</button>
+        </div>
 
-        <section>
-          <h3>Glossar</h3>
-          <p class="hint">Wörter die Whisper besser erkennen soll (Fachbegriffe, Namen etc.)</p>
-          <div id="glossaryList"></div>
-          <div class="input-row">
-            <input type="text" id="glossaryInput" placeholder="Neues Wort...">
-            <button id="addGlossaryBtn" class="secondary-btn">+</button>
-          </div>
-        </section>
+        <div class="tab-panel active" id="tab-general">
+          <section>
+            <h3>Server <span class="info-tooltip" title="Nur noetig wenn du die Web-App separat hostest oder lokal entwickelst. Normalerweise erkennt Parley den Server automatisch.">ⓘ</span></h3>
+            <div class="input-row">
+              <input type="text" id="serverUrl" placeholder="https://server-ip:7443">
+              <button id="saveServerUrl" class="secondary-btn">Speichern</button>
+            </div>
+            <div id="serverStatus"></div>
+          </section>
 
-        <section>
-          <h3>Sprachstatistik</h3>
-          <div id="langStats"></div>
-        </section>
+          <section>
+            <h3>Sprachstatistik</h3>
+            <div id="langStats"></div>
+          </section>
+        </div>
 
-        <section>
-          <h3>Server <span class="info-tooltip" title="Nur noetig wenn du die Web-App separat hostest oder lokal entwickelst. Normalerweise erkennt Parley den Server automatisch.">ⓘ</span></h3>
-          <div class="input-row">
-            <input type="text" id="serverUrl" placeholder="https://server-ip:7443">
-            <button id="saveServerUrl" class="secondary-btn">Speichern</button>
-          </div>
-          <div id="serverStatus"></div>
-        </section>
+        <div class="tab-panel" id="tab-transcription">
+          <section>
+            <h3>Whisper Modell</h3>
+            <p class="hint">Groessere Modelle sind genauer, aber langsamer und brauchen mehr VRAM.</p>
+            <div id="whisperModelSelector" class="model-list"></div>
+            <div id="whisperModelStatus"></div>
+          </section>
+        </div>
+
+        <div class="tab-panel" id="tab-processing">
+          <section>
+            <h3>LLM-Modell</h3>
+            <p class="hint">Modell fuer Cleanup und Reformulieren. Groessere Modelle liefern bessere Ergebnisse, brauchen aber mehr VRAM.</p>
+            <div id="modelSelector" class="model-list"></div>
+            <div id="modelStatus"></div>
+          </section>
+
+          <section>
+            <h3>Glossar</h3>
+            <p class="hint">Wörter die Whisper besser erkennen soll (Fachbegriffe, Namen etc.)</p>
+            <div id="glossaryList"></div>
+            <div class="input-row">
+              <input type="text" id="glossaryInput" placeholder="Neues Wort...">
+              <button id="addGlossaryBtn" class="secondary-btn">+</button>
+            </div>
+          </section>
+
+          <section>
+            <h3>Prompt Presets</h3>
+            <p class="hint">Erstelle eigene Presets fuer verschiedene Anwendungsfaelle.</p>
+            <div id="presetList"></div>
+            <div id="presetForm" class="hidden">
+              <input type="text" id="presetNameInput" placeholder="Name (z.B. WhatsApp, E-Mail...)">
+              <textarea id="presetPromptInput" rows="3" placeholder="Prompt / Anweisung..."></textarea>
+              <div class="preset-form-actions">
+                <button id="presetSaveBtn" class="secondary-btn">Speichern</button>
+                <button id="presetCancelBtn" class="text-btn">Abbrechen</button>
+              </div>
+            </div>
+            <button id="presetAddBtn" class="secondary-btn">+ Neues Preset</button>
+            <div id="presetStatus"></div>
+          </section>
+        </div>
       </div>
     </div>
   </div>
