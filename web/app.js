@@ -135,18 +135,12 @@ async function startRecording() {
       ws = new WebSocket(wsUrl("/ws/transcribe"));
       ws.binaryType = "arraybuffer";
 
-      ws.onopen = () => {
-        console.log("WebSocket connected");
-        statusEl.textContent = "Aufnahme läuft... (Streaming)";
-      };
-
       ws.onmessage = (event) => {
         const data = JSON.parse(event.data);
         handleStreamMessage(data);
       };
 
-      ws.onerror = (err) => {
-        console.warn("WebSocket failed, will use REST on stop", err);
+      ws.onerror = () => {
         ws = null;
       };
 
@@ -179,7 +173,6 @@ function stopRecording() {
 
   if (ws && ws.readyState === WebSocket.OPEN) {
     // WebSocket connected — send stop signal, results come via WS messages
-    console.log("Sending stop via WebSocket");
     ws.send(JSON.stringify({ type: "stop", mode: currentMode, preset: currentMode }));
     // Safety timeout: if no response within 30s, reset UI
     _streamTimeout = setTimeout(() => {
@@ -196,7 +189,6 @@ function stopRecording() {
     }, 30000);
   } else {
     // No WebSocket — send all audio via REST (works on all browsers)
-    console.log("WebSocket not available, using REST with", _localAudioChunks.length, "chunks");
     const blob = new Blob(_localAudioChunks, { type: getOpusMimeType() });
     _localAudioChunks = [];
     if (blob.size > 0) {
