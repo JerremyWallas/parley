@@ -175,6 +175,19 @@ function stopRecording() {
   if (ws && ws.readyState === WebSocket.OPEN) {
     // WebSocket connected — send stop signal, results come via WS messages
     ws.send(JSON.stringify({ type: "stop", mode: currentMode, preset: currentMode }));
+    // Safety timeout: if no response within 30s, reset UI
+    _streamTimeout = setTimeout(() => {
+      if (recordBtn.classList.contains("processing")) {
+        statusEl.textContent = "Zeitüberschreitung — keine Antwort vom Server";
+        streamingSegments = [];
+        streamingLLMText = "";
+        _localAudioChunks = [];
+        recordBtn.classList.remove("processing");
+        recordBtn.querySelector(".label").textContent = "Halten zum Sprechen";
+        if (ws) { ws.close(); ws = null; }
+      }
+      _streamTimeout = null;
+    }, 30000);
   } else {
     // No WebSocket — send all audio via REST (works on all browsers)
     const blob = new Blob(_localAudioChunks, { type: getOpusMimeType() });
@@ -232,6 +245,7 @@ async function sendAudioRest(blob) {
 // --- Handle streaming messages from WebSocket ---
 let streamingSegments = [];
 let streamingLLMText = "";
+let _streamTimeout = null;
 
 function handleStreamMessage(data) {
   switch (data.type) {
@@ -293,6 +307,7 @@ function handleStreamMessage(data) {
       // Reset state
       streamingSegments = [];
       streamingLLMText = "";
+      if (_streamTimeout) { clearTimeout(_streamTimeout); _streamTimeout = null; }
       recordBtn.classList.remove("processing");
       recordBtn.querySelector(".label").textContent = "Halten zum Sprechen";
 
@@ -302,8 +317,12 @@ function handleStreamMessage(data) {
 
     case "error":
       statusEl.textContent = "Fehler: " + data.message;
+      streamingSegments = [];
+      streamingLLMText = "";
+      _localAudioChunks = [];
       recordBtn.classList.remove("processing");
       recordBtn.querySelector(".label").textContent = "Halten zum Sprechen";
+      if (_streamTimeout) { clearTimeout(_streamTimeout); _streamTimeout = null; }
       if (ws) { ws.close(); ws = null; }
       break;
   }
@@ -527,6 +546,10 @@ async function loadSettings() {
     document.getElementById("langStats").innerHTML = entries.length
       ? entries.map(([lang, pct]) => `${lang.toUpperCase()}: ${pct}%`).join(" · ")
       : "Noch keine Daten";
+
+    // Set whisper language dropdown
+    const langSelect = document.getElementById("whisperLanguage");
+    langSelect.value = data.whisper_language || "";
   } catch {
     document.getElementById("langStats").textContent = "Server nicht erreichbar";
   }
@@ -569,6 +592,18 @@ document.getElementById("addGlossaryBtn").addEventListener("click", async () => 
 
 document.getElementById("glossaryInput").addEventListener("keydown", (e) => {
   if (e.key === "Enter") document.getElementById("addGlossaryBtn").click();
+});
+
+// Whisper language selector
+document.getElementById("whisperLanguage").addEventListener("change", async (e) => {
+  const language = e.target.value || null;
+  try {
+    await fetch(apiUrl("/api/whisper-language"), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ language }),
+    });
+  } catch (err) { console.error(err); }
 });
 
 // Model selector

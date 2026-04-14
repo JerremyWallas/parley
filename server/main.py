@@ -39,15 +39,17 @@ app.add_middleware(
 )
 
 
-@app.get("/api/health")
-async def health():
-    """Server health check with GPU and Ollama status."""
-    ollama_status = await cleanup.check_ollama()
-    active_llm = cleanup._get_active_model()
+# --- Cached GPU info to avoid calling nvidia-smi on every request ---
+_gpu_cache = {"data": None, "time": 0}
 
-    gpu_name = "unknown"
-    gpu_memory_used = 0
-    gpu_memory_total = 0
+
+def _get_gpu_info() -> dict:
+    """Return GPU info dict, cached for 60 seconds."""
+    import time as _time
+    now = _time.time()
+    if _gpu_cache["data"] is not None and (now - _gpu_cache["time"]) < 60:
+        return _gpu_cache["data"]
+    info = {"gpu_name": "unknown", "gpu_memory_used": 0, "gpu_memory_total": 0}
     try:
         import subprocess
         result = subprocess.run(
@@ -57,12 +59,28 @@ async def health():
         if result.returncode == 0:
             parts = [p.strip() for p in result.stdout.strip().split(",")]
             if len(parts) == 3:
-                gpu_name = parts[0]
-                gpu_memory_used = int(parts[1])
-                gpu_memory_total = int(parts[2])
+                info["gpu_name"] = parts[0]
+                info["gpu_memory_used"] = int(parts[1])
+                info["gpu_memory_total"] = int(parts[2])
     except Exception:
         pass
+    _gpu_cache["data"] = info
+    _gpu_cache["time"] = now
+    return info
 
+
+@app.get("/api/health")
+async def health():
+    """Server health check with GPU and Ollama status."""
+    ollama_status = await cleanup.check_ollama()
+    active_llm = cleanup._get_active_model()
+
+    gpu = _get_gpu_info()
+    gpu_name = gpu["gpu_name"]
+    gpu_memory_used = gpu["gpu_memory_used"]
+    gpu_memory_total = gpu["gpu_memory_total"]
+
+    prefs = personalization.get_preferences()
     return {
         "status": "ok",
         "whisper_model": config.WHISPER_MODEL,
@@ -73,6 +91,7 @@ async def health():
         "gpu_memory_percent": round(gpu_memory_used / gpu_memory_total * 100, 1) if gpu_memory_total > 0 else 0,
         "ollama": ollama_status,
         "language_stats": personalization.get_language_stats(),
+        "whisper_language": prefs.get("whisper_language", None),
     }
 
 
@@ -292,17 +311,7 @@ async def get_models():
         pass
 
     # Get GPU total VRAM
-    gpu_total_mb = 0
-    try:
-        import subprocess
-        result = subprocess.run(
-            ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, timeout=5,
-        )
-        if result.returncode == 0:
-            gpu_total_mb = int(result.stdout.strip())
-    except Exception:
-        pass
+    gpu_total_mb = _get_gpu_info()["gpu_memory_total"]
 
     models = []
     for m in AVAILABLE_MODELS:
@@ -401,17 +410,7 @@ async def get_whisper_models():
     active = prefs.get("whisper_model", config.WHISPER_MODEL)
 
     # Get GPU total VRAM
-    gpu_total_mb = 0
-    try:
-        import subprocess
-        result = subprocess.run(
-            ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, timeout=5,
-        )
-        if result.returncode == 0:
-            gpu_total_mb = int(result.stdout.strip())
-    except Exception:
-        pass
+    gpu_total_mb = _get_gpu_info()["gpu_memory_total"]
 
     return {
         "models": transcriber.list_models(gpu_total_mb),
@@ -476,6 +475,20 @@ async def delete_whisper_model(data: dict):
         raise HTTPException(500, f"Failed to delete model: {e}")
 
     return {"status": "ok", "deleted": model_id}
+
+
+@app.put("/api/whisper-language")
+async def set_whisper_language(data: dict):
+    """Set the preferred language for Whisper (null for auto-detect)."""
+    language = data.get("language", None)
+    if language == "":
+        language = None
+
+    prefs = personalization.get_preferences()
+    prefs["whisper_language"] = language
+    personalization.save_preferences(prefs)
+
+    return {"whisper_language": language}
 
 
 # --- WebSocket streaming endpoint ---

@@ -98,12 +98,6 @@ class SettingsWindow:
 
     def _make_entry(self, parent, value="", fg=TEXT):
         """Create a styled input field."""
-        entry = tk.Entry(parent, font=(FONT, FONT_SIZE), bg=BG, fg=fg,
-                         insertbackground=TEXT, relief="flat", bd=0,
-                         highlightthickness=1, highlightcolor=ACCENT,
-                         highlightbackground=BORDER)
-        entry.insert(0, value)
-        # Padding inside entry via a frame wrapper
         wrapper = tk.Frame(parent, bg=BG, bd=0, highlightthickness=1,
                            highlightcolor=ACCENT, highlightbackground=BORDER)
         entry = tk.Entry(wrapper, font=(FONT, FONT_SIZE), bg=BG, fg=fg,

@@ -58,16 +58,23 @@ class StreamingSession:
         self.on_error = on_error  # fn(error_message)
         self._ws = None
         self._thread = None
+        self._connected = threading.Event()
         self._raw_text = ""
         self._processed_parts = []
+
+    def _on_open(self, ws):
+        self._connected.set()
+        logger.info("WebSocket connected")
 
     def start(self):
         """Open WebSocket connection in background thread."""
         url = _ws_url(self.server_url, "/ws/transcribe")
         logger.info(f"Opening WebSocket to {url}")
 
+        self._connected.clear()
         self._ws = websocket.WebSocketApp(
             url,
+            on_open=self._on_open,
             on_message=self._on_message,
             on_error=self._on_ws_error,
             on_close=self._on_close,
@@ -78,8 +85,9 @@ class StreamingSession:
             daemon=True,
         )
         self._thread.start()
-        # Wait for connection
-        threading.Event().wait(0.3)
+        # Wait for connection with proper timeout
+        if not self._connected.wait(timeout=3.0):
+            logger.warning("WebSocket connection timed out")
 
     def send_audio(self, wav_bytes: bytes):
         """Send audio chunk to server."""

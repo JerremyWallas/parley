@@ -1,3 +1,4 @@
+import collections
 import io
 import logging
 import threading
@@ -30,12 +31,12 @@ class AudioRecorder:
     def __init__(self, sample_rate: int = 16000, channels: int = 1):
         self.sample_rate = sample_rate
         self.channels = channels
-        self._frames: list[np.ndarray] = []
+        self._frames: collections.deque[np.ndarray] = collections.deque()
         self._stream = None
         self._recording = False
         self._lock = threading.Lock()
         self._on_chunk = None
-        self._chunk_frames: list[np.ndarray] = []
+        self._chunk_frames: collections.deque[np.ndarray] = collections.deque()
         self._chunk_size = 0  # frames per chunk (0 = no chunking)
 
     def start(self, on_chunk=None, chunk_interval_ms: int = 500):
@@ -43,8 +44,8 @@ class AudioRecorder:
         import time
 
         with self._lock:
-            self._frames = []
-            self._chunk_frames = []
+            self._frames = collections.deque()
+            self._chunk_frames = collections.deque()
             self._recording = True
             self._on_chunk = on_chunk
             self._chunk_size = int(self.sample_rate * chunk_interval_ms / 1000) if on_chunk else 0
@@ -88,16 +89,17 @@ class AudioRecorder:
 
             # Send any remaining chunk frames as raw PCM
             if self._on_chunk and self._chunk_frames:
-                pcm = np.concatenate(self._chunk_frames, axis=0).tobytes()
+                pcm = np.concatenate(list(self._chunk_frames), axis=0).tobytes()
                 self._on_chunk(pcm)
-                self._chunk_frames = []
+                self._chunk_frames = collections.deque()
 
             self._on_chunk = None
+            frames = list(self._frames)
 
-        if not self._frames:
+        if not frames:
             return b""
 
-        return self._frames_to_wav(self._frames)
+        return self._frames_to_wav(frames)
 
     def _callback(self, indata, frames, time, status):
         if not self._recording:
@@ -110,8 +112,8 @@ class AudioRecorder:
             self._chunk_frames.append(frame)
             total_samples = sum(f.shape[0] for f in self._chunk_frames)
             if total_samples >= self._chunk_size:
-                pcm = np.concatenate(self._chunk_frames, axis=0).tobytes()
-                self._chunk_frames = []
+                pcm = np.concatenate(list(self._chunk_frames), axis=0).tobytes()
+                self._chunk_frames = collections.deque()
                 self._on_chunk(pcm)
 
     def _frames_to_wav(self, frames: list[np.ndarray]) -> bytes:

@@ -1,3 +1,4 @@
+import json
 import logging
 from typing import AsyncGenerator
 import httpx
@@ -125,7 +126,6 @@ async def process_text_streaming(
                 },
             ) as response:
                 response.raise_for_status()
-                import json
                 async for line in response.aiter_lines():
                     if not line:
                         continue
