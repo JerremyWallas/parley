@@ -875,34 +875,139 @@ async function pullWhisperModel(modelId, optionEl, dlBtn) {
   }
 }
 
-// Preset management
+// --- Prompt editors with 4 preset slots per mode ---
+const MAX_PROMPT_PRESETS = 4;
+let _promptPresets = { cleanup: [], rephrase: [] }; // stored in preferences
+let _activePromptPreset = { cleanup: 0, rephrase: 0 }; // index of active preset per mode
 
-
-// --- Prompt editors for Cleanup and Reformulieren ---
 async function loadPromptEditors() {
   try {
+    const prefs = await apiGet("/api/preferences");
+    _promptPresets = prefs.prompt_presets || { cleanup: [], rephrase: [] };
+    _activePromptPreset = prefs.active_prompt_preset || { cleanup: 0, rephrase: 0 };
+
+    // Also load current active prompt from presets API
     const data = await apiGet("/api/presets");
-    const presets = data.presets || [];
-    for (const p of presets) {
-      if (p.id === "cleanup") {
-        document.getElementById("cleanupPromptText").value = p.prompt || "";
-      } else if (p.id === "rephrase") {
-        document.getElementById("rephrasePromptText").value = p.prompt || "";
+    for (const p of (data.presets || [])) {
+      if (p.id === "cleanup" || p.id === "rephrase") {
+        const mode = p.id;
+        // Ensure at least one preset slot exists with the current prompt
+        if (!_promptPresets[mode] || _promptPresets[mode].length === 0) {
+          _promptPresets[mode] = [{ name: "Standard", prompt: p.prompt }];
+          _activePromptPreset[mode] = 0;
+        }
       }
     }
+  } catch { /* ignore */ }
+
+  _renderPromptPresets("cleanup", "cleanupPresets", "cleanupPromptText");
+  _renderPromptPresets("rephrase", "rephrasePresets", "rephrasePromptText");
+}
+
+function _renderPromptPresets(mode, containerId, textareaId) {
+  const container = document.getElementById(containerId);
+  const textarea = document.getElementById(textareaId);
+  const presets = _promptPresets[mode] || [];
+  const activeIdx = _activePromptPreset[mode] || 0;
+  container.innerHTML = "";
+
+  for (let i = 0; i < MAX_PROMPT_PRESETS; i++) {
+    const btn = document.createElement("div");
+    btn.className = "prompt-preset-btn" + (i === activeIdx ? " active" : "") + (i >= presets.length ? " empty" : "");
+    btn.textContent = i < presets.length ? (presets[i].name || `Preset ${i + 1}`) : "+";
+
+    if (i < presets.length) {
+      // Click to load this preset
+      const idx = i;
+      btn.addEventListener("click", () => {
+        _activePromptPreset[mode] = idx;
+        textarea.value = presets[idx].prompt || "";
+        _renderPromptPresets(mode, containerId, textareaId);
+        _activatePresetOnServer(mode, idx);
+      });
+
+      // Delete button (don't allow deleting the last one)
+      if (presets.length > 1) {
+        const del = document.createElement("button");
+        del.className = "preset-del";
+        del.textContent = "✕";
+        del.addEventListener("click", (e) => {
+          e.stopPropagation();
+          presets.splice(idx, 1);
+          if (_activePromptPreset[mode] >= presets.length) _activePromptPreset[mode] = 0;
+          textarea.value = presets[_activePromptPreset[mode]]?.prompt || "";
+          _savePromptPresets();
+          _renderPromptPresets(mode, containerId, textareaId);
+        });
+        btn.appendChild(del);
+      }
+    } else {
+      // Empty slot — click to save current prompt as new preset
+      btn.addEventListener("click", () => {
+        const prompt = textarea.value.trim();
+        if (!prompt) return;
+        const name = "Preset " + (presets.length + 1);
+        presets.push({ name, prompt });
+        _activePromptPreset[mode] = presets.length - 1;
+        _savePromptPresets();
+        _renderPromptPresets(mode, containerId, textareaId);
+      });
+    }
+
+    container.appendChild(btn);
+  }
+
+  // Load active preset into textarea
+  if (presets[activeIdx]) {
+    textarea.value = presets[activeIdx].prompt || "";
+  }
+}
+
+async function _activatePresetOnServer(mode, idx) {
+  const presets = _promptPresets[mode] || [];
+  if (!presets[idx]) return;
+  try {
+    await fetch(apiUrl("/api/presets/" + mode), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt: presets[idx].prompt }),
+    });
+  } catch { /* ignore */ }
+  await _savePromptPresets();
+}
+
+async function _savePromptPresets() {
+  try {
+    const prefs = await apiGet("/api/preferences");
+    prefs.prompt_presets = _promptPresets;
+    prefs.active_prompt_preset = _activePromptPreset;
+    await fetch(apiUrl("/api/preferences"), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(prefs),
+    });
   } catch { /* ignore */ }
 }
 
 function _setupPromptEditor(mode, textareaId, saveBtnId, resetBtnId, statusId) {
+  // Save: update the active preset's prompt
   document.getElementById(saveBtnId).addEventListener("click", async () => {
     const prompt = document.getElementById(textareaId).value.trim();
     const statusEl = document.getElementById(statusId);
+    const idx = _activePromptPreset[mode] || 0;
+    const presets = _promptPresets[mode] || [];
+
+    if (presets[idx]) {
+      presets[idx].prompt = prompt;
+    }
+
     try {
       await fetch(apiUrl("/api/presets/" + mode), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ prompt }),
       });
+      await _savePromptPresets();
       statusEl.textContent = "Gespeichert!";
       setTimeout(() => { statusEl.textContent = ""; }, 2000);
     } catch (err) {
@@ -910,10 +1015,10 @@ function _setupPromptEditor(mode, textareaId, saveBtnId, resetBtnId, statusId) {
     }
   });
 
+  // Reset: restore default prompt
   document.getElementById(resetBtnId).addEventListener("click", async () => {
     const statusEl = document.getElementById(statusId);
     try {
-      // Fetch default prompts from cleanup.py via a special reset call
       await fetch(apiUrl("/api/presets/" + mode + "/reset"), { method: "POST" });
       await loadPromptEditors();
       statusEl.textContent = "Zurueckgesetzt!";

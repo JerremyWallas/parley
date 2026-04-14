@@ -128,24 +128,26 @@
 
           <section>
             <h3>Cleanup-Prompt</h3>
-            <p class="hint">Anweisung fuer den Cleanup-Modus (Fuellwoerter entfernen, bereinigen)</p>
+            <p class="hint">Anweisung fuer den Cleanup-Modus. Speichere bis zu 4 Varianten als Presets.</p>
+            <div class="prompt-presets" id="cleanupPresets"></div>
             <textarea id="cleanupPromptText" rows="3" class="prompt-textarea"></textarea>
             <div class="prompt-actions">
-              <button id="cleanupPromptSave" class="secondary-btn">Speichern</button>
+              <button id="cleanupPromptSave" class="secondary-btn">Als Preset speichern</button>
               <button id="cleanupPromptReset" class="text-btn">Zuruecksetzen</button>
-              <span id="cleanupPromptStatus"></span>
             </div>
+            <div id="cleanupPromptStatus" class="prompt-status"></div>
           </section>
 
           <section>
             <h3>Reformulieren-Prompt</h3>
-            <p class="hint">Anweisung fuer den Reformulieren-Modus (Text umformulieren, Kernaussage herausarbeiten)</p>
+            <p class="hint">Anweisung fuer den Reformulieren-Modus. Speichere bis zu 4 Varianten als Presets.</p>
+            <div class="prompt-presets" id="rephrasePresets"></div>
             <textarea id="rephrasePromptText" rows="3" class="prompt-textarea"></textarea>
             <div class="prompt-actions">
-              <button id="rephrasePromptSave" class="secondary-btn">Speichern</button>
+              <button id="rephrasePromptSave" class="secondary-btn">Als Preset speichern</button>
               <button id="rephrasePromptReset" class="text-btn">Zuruecksetzen</button>
-              <span id="rephrasePromptStatus"></span>
             </div>
+            <div id="rephrasePromptStatus" class="prompt-status"></div>
           </section>
         </div>
       </div>
