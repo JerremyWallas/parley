@@ -2,6 +2,7 @@ import sys
 import threading
 import logging
 import urllib3
+import httpx
 from pynput import keyboard
 import pystray
 
@@ -31,6 +32,77 @@ overlay = RecordingOverlay()
 last_result_text = ""
 _active_mode = None  # None, "hold", or "toggle"
 _streaming_session = None
+_cached_presets = []  # list of preset dicts from server
+_active_preset_id = "raw"  # currently active preset id
+preset_hotkey_parts = {}  # {"<ctrl>+1": (["<ctrl>", "1"], "raw"), ...}
+
+
+def _fetch_presets() -> list[dict]:
+    """Fetch presets from server and cache them. Returns list of preset dicts."""
+    global _cached_presets, _active_preset_id
+    try:
+        url = f"{cfg['server_url'].rstrip('/')}/api/presets"
+        resp = httpx.get(url, verify=False, timeout=5.0)
+        resp.raise_for_status()
+        data = resp.json()
+        _cached_presets = data.get("presets", [])
+        _active_preset_id = data.get("active", "raw")
+        # Sync mode in cfg
+        cfg["mode"] = _active_preset_id
+        logger.info(f"Fetched {len(_cached_presets)} presets, active: {_active_preset_id}")
+        return _cached_presets
+    except Exception as e:
+        logger.warning(f"Could not fetch presets: {e}")
+        return []
+
+
+def _set_active_preset(preset_id: str):
+    """Set the active preset on the server and update local state."""
+    global _active_preset_id
+    try:
+        url = f"{cfg['server_url'].rstrip('/')}/api/presets/active"
+        resp = httpx.put(url, json={"id": preset_id}, verify=False, timeout=5.0)
+        resp.raise_for_status()
+        _active_preset_id = preset_id
+        cfg["mode"] = preset_id
+        logger.info(f"Active preset set to: {preset_id}")
+    except Exception as e:
+        logger.warning(f"Could not set active preset: {e}")
+        # Still update locally even if server call fails
+        _active_preset_id = preset_id
+        cfg["mode"] = preset_id
+
+
+def _get_active_preset_name() -> str:
+    """Get the display name of the currently active preset."""
+    if _active_preset_id == "raw":
+        return "Raw"
+    for p in _cached_presets:
+        if p.get("id") == _active_preset_id:
+            return p.get("name", _active_preset_id)
+    return _active_preset_id
+
+
+def _get_preset_name(preset_id: str) -> str:
+    """Get the display name for a preset by id."""
+    if preset_id == "raw":
+        return "Raw"
+    for p in _cached_presets:
+        if p.get("id") == preset_id:
+            return p.get("name", preset_id)
+    return preset_id
+
+
+def _switch_preset_with_notification(preset_id: str):
+    """Switch to a preset and show a brief overlay notification."""
+    _set_active_preset(preset_id)
+    name = _get_preset_name(preset_id)
+    logger.info(f"Preset switched to: {name}")
+    # Show brief overlay notification
+    overlay.show_notification(f"Preset: {name}")
+    # Rebuild tray menu to reflect the change
+    if tray_icon:
+        tray_icon.menu = build_menu()
 
 
 def parse_hotkey(hotkey_str: str) -> list[str]:
@@ -55,7 +127,7 @@ def _start_recording():
 
     _streaming_session = api_client.StreamingSession(
         server_url=cfg["server_url"],
-        mode=cfg["mode"],
+        mode=_active_preset_id,
         on_segment=_on_segment,
         on_llm_token=_on_llm_token,
         on_done=_on_done,
@@ -87,34 +159,46 @@ def on_key_press(key):
     key_str = key_to_str(key)
     pressed_keys.add(key_str)
 
-    # Hold hotkey pressed — start hold recording
-    if not audio_rec.is_recording and all(part in pressed_keys for part in hold_parts):
-        _active_mode = "hold"
-        _start_recording()
-        return
+    # Stop key pressed while in toggle mode — always check first
+    if audio_rec.is_recording and _active_mode == "toggle":
+        if key_str in stop_parts:
+            _stop_recording()
+            return
 
-    # Toggle hotkey pressed
-    if all(part in pressed_keys for part in toggle_parts):
+    # Check preset hotkeys (only when not recording)
+    if not audio_rec.is_recording:
+        for hotkey_str, (parts, preset_id) in preset_hotkey_parts.items():
+            if all(part in pressed_keys for part in parts):
+                _switch_preset_with_notification(preset_id)
+                return
+
+    # Toggle hotkey pressed (check BEFORE hold — toggle typically has more keys,
+    # and if hold keys are a subset of toggle keys, hold would wrongly trigger first)
+    if toggle_parts and all(part in pressed_keys for part in toggle_parts):
         if not audio_rec.is_recording:
             _active_mode = "toggle"
             _start_recording()
+            logger.info("Toggle mode: recording started (press again or stop key to finish)")
         elif _active_mode == "toggle":
             _stop_recording()
         return
 
-    # Stop key pressed while in toggle mode
-    if audio_rec.is_recording and _active_mode == "toggle":
-        if key_str in stop_parts:
-            _stop_recording()
+    # Hold hotkey pressed — only if not already recording in toggle mode
+    if hold_parts and not audio_rec.is_recording and all(part in pressed_keys for part in hold_parts):
+        _active_mode = "hold"
+        _start_recording()
+        return
 
 
 def on_key_release(key):
     global _active_mode
     key_str = key_to_str(key)
 
-    # Hold mode: stop when any hold hotkey part is released
+    # Hold mode only: stop when any hold hotkey part is released
     if audio_rec.is_recording and _active_mode == "hold" and key_str in hold_parts:
         _stop_recording()
+
+    # Toggle mode: nothing on release — stop is in on_key_press
 
     pressed_keys.discard(key_str)
 
@@ -154,12 +238,11 @@ def _on_done(raw_text: str, processed_text: str):
 def _save_to_server_history(raw_text: str, processed_text: str):
     """Save transcription to server history so it shows in the web app."""
     try:
-        import httpx
         url = f"{cfg['server_url'].rstrip('/')}/api/history"
         httpx.post(url, json={
             "raw_text": raw_text,
             "processed_text": processed_text,
-            "mode": cfg.get("mode", "raw"),
+            "mode": _active_preset_id,
             "language": "",
         }, verify=False, timeout=5.0)
         logger.debug("Saved to server history")
@@ -168,19 +251,50 @@ def _save_to_server_history(raw_text: str, processed_text: str):
 
 
 def _on_error(message: str):
-    """Called on WebSocket or server error — fall back to REST."""
+    """Called on WebSocket or server error — show notification."""
     global _streaming_session
-    logger.warning(f"Streaming failed ({message}), trying REST fallback...")
     _streaming_session = None
+    update_icon()
 
-    # Fallback: use the complete recorded audio via REST
-    update_icon(processing=True)
+    logger.error(f"Server error: {message}")
+
+    # Show popup notification
+    _show_error_popup(message)
+
+
+def _show_error_popup(message: str):
+    """Show a Windows notification popup for errors."""
     try:
-        # Re-record is not possible, but audio_rec.stop() already returned the full audio
-        # The frames are gone, so just report the error
-        logger.error("REST fallback not possible — audio already consumed by stream")
-    finally:
-        update_icon()
+        import threading
+
+        def _show():
+            import tkinter as tk
+            root = tk.Tk()
+            root.withdraw()
+            root.attributes("-topmost", True)
+            from tkinter import messagebox
+            if "connect" in message.lower() or "refused" in message.lower() or "unreachable" in message.lower() or "timed out" in message.lower():
+                messagebox.showerror(
+                    "Parley — Server nicht erreichbar",
+                    f"Der Server konnte nicht erreicht werden.\n\n"
+                    f"Pruefe:\n"
+                    f"  - Laeuft Tailscale / VPN?\n"
+                    f"  - Ist der Server eingeschaltet?\n"
+                    f"  - Stimmt die Server-URL?\n\n"
+                    f"URL: {cfg.get('server_url', '?')}\n"
+                    f"Fehler: {message}",
+                )
+            else:
+                messagebox.showerror(
+                    "Parley — Fehler",
+                    f"Bei der Verarbeitung ist ein Fehler aufgetreten.\n\n"
+                    f"Fehler: {message}",
+                )
+            root.destroy()
+
+        threading.Thread(target=_show, daemon=True).start()
+    except Exception:
+        pass
 
 
 def handle_send_mode():
@@ -345,17 +459,16 @@ def update_icon(recording: bool = False, processing: bool = False, listening: bo
         overlay.hide()
 
 
-def set_mode(mode: str):
+def set_preset(preset_id: str):
     def _set(icon, item):
-        cfg["mode"] = mode
-        config.save(cfg)
-        logger.info(f"Mode set to: {mode}")
+        _set_active_preset(preset_id)
+        logger.info(f"Preset set to: {preset_id}")
     return _set
 
 
-def get_mode_checked(mode: str):
+def get_preset_checked(preset_id: str):
     def _check(item):
-        return cfg.get("mode") == mode
+        return _active_preset_id == preset_id
     return _check
 
 
@@ -373,6 +486,8 @@ def open_settings(icon, item):
         hold_parts = parse_hotkey(cfg["hotkey_hold"])
         toggle_parts = parse_hotkey(cfg["hotkey_toggle"])
         stop_parts = parse_hotkey(cfg["stop_key"])
+        _parse_preset_hotkeys()
+        _fetch_presets()
         logger.info(f"Settings updated — Hold: {cfg['hotkey_hold']}, Toggle: {cfg['hotkey_toggle']}, Server: {cfg['server_url']}")
         # Rebuild tray menu to reflect new settings
         if tray_icon:
@@ -404,14 +519,22 @@ def quit_app(icon, item):
     icon.stop()
 
 
+def _build_preset_menu_items():
+    """Build dynamic preset menu items from cached presets."""
+    items = [pystray.MenuItem("Raw", set_preset("raw"), checked=get_preset_checked("raw"))]
+    for preset in _cached_presets:
+        pid = preset.get("id", "")
+        name = preset.get("name", pid)
+        if pid == "raw":
+            continue  # Already added as first item
+        items.append(pystray.MenuItem(name, set_preset(pid), checked=get_preset_checked(pid)))
+    return items
+
+
 def build_menu():
     last_preview = (last_result_text[:30] + "...") if len(last_result_text) > 30 else last_result_text
     return pystray.Menu(
-        pystray.MenuItem("Modus", pystray.Menu(
-            pystray.MenuItem("Raw", set_mode("raw"), checked=get_mode_checked("raw")),
-            pystray.MenuItem("Cleanup", set_mode("cleanup"), checked=get_mode_checked("cleanup")),
-            pystray.MenuItem("Reformulieren", set_mode("rephrase"), checked=get_mode_checked("rephrase")),
-        )),
+        pystray.MenuItem("Preset", pystray.Menu(*_build_preset_menu_items())),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem(
             f"Letzte: {last_preview}" if last_result_text else "Kein letztes Ergebnis",
@@ -433,16 +556,31 @@ def build_menu():
     )
 
 
+def _parse_preset_hotkeys():
+    """Parse preset hotkey config into the global preset_hotkey_parts dict."""
+    global preset_hotkey_parts
+    preset_hotkey_parts = {}
+    raw_map = cfg.get("preset_hotkeys", {})
+    for hotkey_str, preset_id in raw_map.items():
+        parts = parse_hotkey(hotkey_str)
+        preset_hotkey_parts[hotkey_str] = (parts, preset_id)
+        logger.info(f"Preset hotkey: {hotkey_str} -> {preset_id}")
+
+
 def main():
     global tray_icon, hold_parts, toggle_parts, stop_parts
 
     logger.info("Parley Desktop Client")
     logger.info(f"Server: {cfg['server_url']}")
-    logger.info(f"Mode: {cfg['mode']}")
+
+    # Fetch presets from server
+    _fetch_presets()
+    logger.info(f"Active preset: {_active_preset_id}")
 
     hold_parts = parse_hotkey(cfg["hotkey_hold"])
     toggle_parts = parse_hotkey(cfg["hotkey_toggle"])
     stop_parts = parse_hotkey(cfg["stop_key"])
+    _parse_preset_hotkeys()
     logger.info(f"Hold hotkey: {hold_parts}")
     logger.info(f"Toggle hotkey: {toggle_parts}")
     logger.info(f"Stop key: {stop_parts}")

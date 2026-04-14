@@ -13,6 +13,7 @@ DEFAULTS = {
     "autostart": False,
     "send_mode": "off",  # "off", "auto", "voice"
     "send_listen_seconds": 10,
+    "preset_hotkeys": {},  # e.g. {"<ctrl>+1": "raw", "<ctrl>+2": "cleanup"}
 }
 
 

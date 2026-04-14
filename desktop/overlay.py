@@ -22,8 +22,10 @@ class RecordingOverlay:
         self._canvas = None
         self._thread = None
         self._running = False
-        self._state = "hidden"  # hidden, recording, processing, listening
+        self._state = "hidden"  # hidden, recording, processing, listening, notification
         self._animation_step = 0
+        self._notification_text = ""
+        self._notification_timer = None
 
     def show(self, state: str = "recording"):
         """Show overlay with given state. Thread-safe."""
@@ -47,6 +49,22 @@ class RecordingOverlay:
         self._state = state
         if self._root and self._running:
             self._root.after(0, self._update_visuals)
+
+    def show_notification(self, text: str, duration_ms: int = 1500):
+        """Show a brief text notification overlay that auto-hides after duration_ms."""
+        self._notification_text = text
+        self._state = "notification"
+        if self._root and self._running:
+            # Cancel any pending hide timer
+            if self._notification_timer:
+                self._root.after_cancel(self._notification_timer)
+            self._root.after(0, lambda: self._show_notification_window(duration_ms))
+        elif not self._running:
+            self._thread = threading.Thread(target=self._run, daemon=True)
+            self._thread.start()
+            threading.Event().wait(0.3)
+            if self._root and self._running:
+                self._root.after(0, lambda: self._show_notification_window(duration_ms))
 
     def _run(self):
         self._running = True
@@ -86,6 +104,26 @@ class RecordingOverlay:
             return
 
         self._canvas.delete("all")
+
+        if self._state == "notification":
+            # Draw notification text on the (resized) canvas
+            w = self._canvas.winfo_width() or 260
+            h = self._canvas.winfo_height() or 60
+            # Background rounded rect
+            pad = 4
+            self._canvas.create_rectangle(
+                pad, pad, w - pad, h - pad,
+                fill="#1e293b", outline="#3b82f6", width=2,
+            )
+            self._canvas.create_text(
+                w // 2, h // 2,
+                text=self._notification_text,
+                fill="white", font=("Segoe UI", 13, "bold"),
+                anchor="center",
+            )
+            self._root.after(50, self._animate)
+            return
+
         cx, cy = 50, 50
 
         self._animation_step += 1
@@ -161,6 +199,40 @@ class RecordingOverlay:
                 cx + dx - 1, cy - 3, cx + dx + 1, cy - 1,
                 fill="#333333", outline="",
             )
+
+    def _show_notification_window(self, duration_ms: int):
+        """Resize window for notification text, show it, and schedule auto-hide."""
+        if not self._root or not self._running:
+            return
+        # Resize to fit text
+        width, height = 260, 60
+        screen_w = self._root.winfo_screenwidth()
+        screen_h = self._root.winfo_screenheight()
+        x = (screen_w - width) // 2
+        y = screen_h - height - 60
+        self._root.geometry(f"{width}x{height}+{x}+{y}")
+        if self._canvas:
+            self._canvas.config(width=width, height=height)
+        self._root.deiconify()
+        # Schedule auto-hide
+        self._notification_timer = self._root.after(duration_ms, self._end_notification)
+
+    def _end_notification(self):
+        """Hide notification and restore normal overlay size."""
+        self._notification_timer = None
+        self._state = "hidden"
+        self._notification_text = ""
+        if self._root and self._running:
+            self._root.withdraw()
+            # Restore original size
+            size = 100
+            screen_w = self._root.winfo_screenwidth()
+            screen_h = self._root.winfo_screenheight()
+            x = (screen_w - size) // 2
+            y = screen_h - size - 60
+            self._root.geometry(f"{size}x{size}+{x}+{y}")
+            if self._canvas:
+                self._canvas.config(width=size, height=size)
 
     def _update_visuals(self):
         pass  # Animation loop handles it
