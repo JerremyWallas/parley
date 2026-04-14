@@ -138,7 +138,7 @@ function getOpusMimeType() {
 async function startRecording() {
   try {
     const stream = await navigator.mediaDevices.getUserMedia({
-      audio: { sampleRate: 16000, channelCount: 1, echoCancellation: true, noiseSuppression: true },
+      audio: { echoCancellation: true, noiseSuppression: true },
     });
 
     // Setup visualizer
