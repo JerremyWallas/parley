@@ -540,9 +540,18 @@ async def ws_transcribe(ws: WebSocket):
                 raw_audio = bytes(audio_buffer)
                 audio_buffer.clear()
 
-                # If the audio doesn't start with a WAV/RIFF header, it's raw PCM
-                # from the desktop client — wrap it in a WAV container
-                if raw_audio[:4] != b"RIFF":
+                # Detect audio format and handle accordingly:
+                # - RIFF header (0x52494646) = WAV from desktop client
+                # - WebM header (0x1A45DFA3) = Opus/WebM from browser
+                # - Neither = raw PCM from desktop client, wrap in WAV
+                if raw_audio[:4] == b"RIFF" or raw_audio[:4] == b"\x1a\x45\xdf\xa3":
+                    # WAV or WebM — pass through directly (ffmpeg/Whisper handles both)
+                    audio_bytes = raw_audio
+                elif raw_audio[:4] == b"OggS":
+                    # Ogg/Opus — pass through
+                    audio_bytes = raw_audio
+                else:
+                    # Raw PCM — wrap in WAV container
                     import io as _io
                     import wave as _wave
                     sample_rate = data.get("sample_rate", 16000)
@@ -553,8 +562,6 @@ async def ws_transcribe(ws: WebSocket):
                         wf.setframerate(sample_rate)
                         wf.writeframes(raw_audio)
                     audio_bytes = buf.getvalue()
-                else:
-                    audio_bytes = raw_audio
 
                 # --- Phase 1: Stream Whisper segments ---
                 initial_prompt = personalization.build_initial_prompt()
