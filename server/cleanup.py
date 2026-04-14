@@ -35,15 +35,17 @@ DEFAULT_PROMPTS = {
 }
 
 
-def _get_prompt(mode: str) -> str:
-    """Get the prompt for a mode, using custom prompt from preferences if set."""
-    prefs = personalization.get_preferences()
-    custom_prompts = prefs.get("custom_prompts", {})
-    return custom_prompts.get(mode) or DEFAULT_PROMPTS[mode]
+def _get_preset_prompt(preset_id: str) -> str:
+    """Get prompt text for a preset. Falls back to defaults."""
+    presets = personalization.get_presets()
+    for p in presets:
+        if p["id"] == preset_id:
+            return p["prompt"]
+    return DEFAULT_PROMPTS.get(preset_id, DEFAULT_PROMPTS["cleanup"])
 
 
-def _build_prompt(mode: str, raw_text: str, few_shot_examples: list[dict] | None = None) -> str:
-    base = _get_prompt(mode)
+def _build_prompt(preset_id: str, raw_text: str, few_shot_examples: list[dict] | None = None) -> str:
+    base = _get_preset_prompt(preset_id)
 
     if few_shot_examples:
         base += "Hier sind Beispiele, wie der Nutzer Texte formuliert haben möchte:\n"
@@ -57,15 +59,15 @@ def _build_prompt(mode: str, raw_text: str, few_shot_examples: list[dict] | None
 
 
 async def process_text(
-    mode: str,
+    preset_id: str,
     raw_text: str,
     few_shot_examples: list[dict] | None = None,
 ) -> str:
-    """Send text to Ollama for cleanup/rephrasing. Returns processed text."""
-    if mode == "raw" or not raw_text.strip():
+    """Send text to Ollama for processing using a preset. Returns processed text."""
+    if preset_id == "raw" or not raw_text.strip():
         return raw_text
 
-    prompt = _build_prompt(mode, raw_text, few_shot_examples)
+    prompt = _build_prompt(preset_id, raw_text, few_shot_examples)
 
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
@@ -95,16 +97,16 @@ async def process_text(
 
 
 async def process_text_streaming(
-    mode: str,
+    preset_id: str,
     raw_text: str,
     few_shot_examples: list[dict] | None = None,
 ):
     """Stream LLM response token by token. Yields text chunks."""
-    if mode == "raw" or not raw_text.strip():
+    if preset_id == "raw" or not raw_text.strip():
         yield raw_text
         return
 
-    prompt = _build_prompt(mode, raw_text, few_shot_examples)
+    prompt = _build_prompt(preset_id, raw_text, few_shot_examples)
 
     try:
         active_model = _get_active_model()

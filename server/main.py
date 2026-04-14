@@ -81,11 +81,8 @@ async def transcribe_audio(
 ):
     """Transcribe audio and optionally process with LLM.
 
-    mode: "raw" | "cleanup" | "rephrase"
+    mode: preset ID or "raw" (no processing)
     """
-    if mode not in ("raw", "cleanup", "rephrase"):
-        raise HTTPException(400, f"Invalid mode: {mode}. Must be 'raw', 'cleanup', or 'rephrase'.")
-
     audio_bytes = await audio.read()
     if not audio_bytes:
         raise HTTPException(400, "Empty audio file.")
@@ -159,35 +156,57 @@ async def remove_word(data: dict):
     return {"words": personalization.get_glossary()}
 
 
-# --- Prompts ---
+# --- Presets ---
 
-@app.get("/api/prompts")
-async def get_prompts():
-    """Get current prompts (custom or default) for each mode."""
-    prefs = personalization.get_preferences()
-    custom = prefs.get("custom_prompts", {})
+@app.get("/api/presets")
+async def get_presets():
+    """Get all presets and the active preset ID."""
     return {
-        "cleanup": custom.get("cleanup", ""),
-        "rephrase": custom.get("rephrase", ""),
-        "cleanup_default": cleanup.DEFAULT_PROMPTS["cleanup"],
-        "rephrase_default": cleanup.DEFAULT_PROMPTS["rephrase"],
+        "presets": personalization.get_presets(),
+        "active": personalization.get_active_preset_id(),
     }
 
 
-@app.put("/api/prompts")
-async def set_prompts(data: dict):
-    """Save custom prompts. Empty string = use default."""
-    prefs = personalization.get_preferences()
-    custom = prefs.get("custom_prompts", {})
-    for mode in ("cleanup", "rephrase"):
-        if mode in data:
-            val = data[mode].strip()
-            if val:
-                custom[mode] = val
-            elif mode in custom:
-                del custom[mode]
-    prefs["custom_prompts"] = custom
-    personalization.save_preferences(prefs)
+@app.post("/api/presets")
+async def create_preset(data: dict):
+    """Create a new preset."""
+    name = data.get("name", "").strip()
+    prompt = data.get("prompt", "").strip()
+    if not name or not prompt:
+        raise HTTPException(400, "Fields 'name' and 'prompt' are required.")
+    preset = personalization.add_preset(name, prompt)
+    return preset
+
+
+@app.put("/api/presets/active")
+async def set_active_preset(data: dict):
+    """Set the active preset by ID."""
+    preset_id = data.get("id", "").strip()
+    if not preset_id:
+        raise HTTPException(400, "Field 'id' is required.")
+    personalization.set_active_preset(preset_id)
+    return {"status": "ok", "active": preset_id}
+
+
+@app.put("/api/presets/{preset_id}")
+async def update_preset(preset_id: str, data: dict):
+    """Update an existing preset's name and/or prompt."""
+    result = personalization.update_preset(
+        preset_id,
+        name=data.get("name"),
+        prompt=data.get("prompt"),
+    )
+    if result is None:
+        raise HTTPException(404, f"Preset '{preset_id}' not found.")
+    return result
+
+
+@app.delete("/api/presets/{preset_id}")
+async def delete_preset(preset_id: str):
+    """Delete a non-builtin preset."""
+    success = personalization.delete_preset(preset_id)
+    if not success:
+        raise HTTPException(400, f"Cannot delete preset '{preset_id}' (builtin or not found).")
     return {"status": "ok"}
 
 
@@ -401,8 +420,7 @@ async def ws_transcribe(ws: WebSocket):
                     continue
 
                 mode = data.get("mode", "raw")
-                if mode not in ("raw", "cleanup", "rephrase"):
-                    mode = "raw"
+                preset_id = data.get("preset", mode)  # New clients send "preset", old clients send "mode"
 
                 if not audio_buffer:
                     await ws.send_json({"type": "error", "message": "No audio received"})
@@ -462,12 +480,12 @@ async def ws_transcribe(ws: WebSocket):
                 personalization.update_language_stats(language)
 
                 # --- Phase 2: Stream LLM tokens ---
-                if mode == "raw":
+                if preset_id == "raw":
                     await ws.send_json({"type": "llm_done", "processed_text": raw_text})
                 else:
                     few_shot = personalization.get_recent_corrections()
                     full_response = []
-                    async for token in cleanup.process_text_streaming(mode, raw_text, few_shot):
+                    async for token in cleanup.process_text_streaming(preset_id, raw_text, few_shot):
                         full_response.append(token)
                         await ws.send_json({"type": "llm_token", "token": token})
 
