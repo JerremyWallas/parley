@@ -15,7 +15,7 @@
   <div id="app">
     <!-- Header -->
     <header>
-      <h1>Parley <span class="version-badge">v1.2</span></h1>
+      <h1>Parley <span class="version-badge">v1.3</span></h1>
       <button id="settingsBtn" class="icon-btn" title="Einstellungen">⚙</button>
     </header>
 
@@ -106,6 +106,29 @@
             <div id="whisperModelSelector" class="model-list"></div>
             <div id="whisperModelStatus"></div>
           </section>
+
+          <section>
+            <h3>Sprache</h3>
+            <p class="hint">Feste Sprache ist schneller als Auto-Erkennung (~0.5s pro Aufnahme).</p>
+            <select id="whisperLanguage" class="styled-select">
+              <option value="">Auto (alle Sprachen erkennen)</option>
+              <option value="de">Deutsch</option>
+              <option value="en">Englisch</option>
+              <option value="fr">Franzoesisch</option>
+              <option value="es">Spanisch</option>
+              <option value="it">Italienisch</option>
+            </select>
+          </section>
+
+          <section>
+            <h3>Glossar</h3>
+            <p class="hint">Woerter die Whisper besser erkennen soll (Fachbegriffe, Namen etc.)</p>
+            <div id="glossaryList"></div>
+            <div class="input-row">
+              <input type="text" id="glossaryInput" placeholder="Neues Wort...">
+              <button id="addGlossaryBtn" class="secondary-btn">+</button>
+            </div>
+          </section>
         </div>
 
         <div class="tab-panel" id="tab-processing">
@@ -114,16 +137,6 @@
             <p class="hint">Modell fuer Cleanup und Reformulieren. Groessere Modelle liefern bessere Ergebnisse, brauchen aber mehr VRAM.</p>
             <div id="modelSelector" class="model-list"></div>
             <div id="modelStatus"></div>
-          </section>
-
-          <section>
-            <h3>Glossar</h3>
-            <p class="hint">Wörter die Whisper besser erkennen soll (Fachbegriffe, Namen etc.)</p>
-            <div id="glossaryList"></div>
-            <div class="input-row">
-              <input type="text" id="glossaryInput" placeholder="Neues Wort...">
-              <button id="addGlossaryBtn" class="secondary-btn">+</button>
-            </div>
           </section>
 
           <section>
