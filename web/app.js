@@ -189,6 +189,31 @@ function stopRecording() {
   }
 }
 
+function showFinalResult(rawText, processedText, language, durationMs) {
+  lastRawText = rawText;
+  resultText.value = processedText || rawText;
+  resultMeta.textContent = `${(language || "").toUpperCase()} · ${durationMs || 0}ms · ${currentMode}`;
+  correctionStatus.textContent = "";
+  resultArea.classList.remove("hidden");
+
+  if (currentMode !== "raw" && rawText !== processedText) {
+    rawTextEl.classList.remove("hidden");
+    rawTextEl.querySelector("p").textContent = rawText;
+  } else {
+    rawTextEl.classList.add("hidden");
+  }
+
+  copyToClipboard(processedText || rawText);
+  statusEl.textContent = "In Zwischenablage kopiert";
+
+  saveToHistory({
+    raw_text: rawText,
+    processed_text: processedText || rawText,
+    mode: currentMode,
+    language: language || "",
+  });
+}
+
 async function sendAudioRest(blob) {
   try {
     const formData = new FormData();
