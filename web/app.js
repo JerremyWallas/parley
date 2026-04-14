@@ -8,6 +8,7 @@ let analyser = null;
 let animationFrame = null;
 let lastRawText = "";
 let ws = null;
+let _localAudioChunks = []; // Keep local copy for REST fallback
 
 // --- DOM ---
 const recordBtn = document.getElementById("recordBtn");
@@ -100,53 +101,55 @@ async function startRecording() {
     source.connect(analyser);
     drawWaveform();
 
-    // Open WebSocket connection
-    ws = new WebSocket(wsUrl("/ws/transcribe"));
-    ws.binaryType = "arraybuffer";
+    // Start recording IMMEDIATELY (don't wait for WebSocket)
+    _localAudioChunks = [];
+    mediaRecorder = new MediaRecorder(stream, {
+      mimeType: getOpusMimeType(),
+      audioBitsPerSecond: 16000,
+    });
 
-    ws.onopen = () => {
-      // Start recording with Opus compression, send chunks every 500ms
-      mediaRecorder = new MediaRecorder(stream, {
-        mimeType: getOpusMimeType(),
-        audioBitsPerSecond: 16000,
-      });
-
-      mediaRecorder.ondataavailable = (e) => {
-        if (e.data.size > 0 && ws && ws.readyState === WebSocket.OPEN) {
+    mediaRecorder.ondataavailable = (e) => {
+      if (e.data.size > 0) {
+        _localAudioChunks.push(e.data);
+        // Stream to WebSocket if connected
+        if (ws && ws.readyState === WebSocket.OPEN) {
           e.data.arrayBuffer().then(buf => ws.send(buf));
         }
-      };
-
-      mediaRecorder.onstop = () => {
-        stream.getTracks().forEach(t => t.stop());
-        cancelAnimationFrame(animationFrame);
-        if (audioContext) {
-          audioContext.close();
-          audioContext = null;
-        }
-        clearCanvas();
-      };
-
-      // Collect chunks every 500ms for streaming upload
-      mediaRecorder.start(500);
-    };
-
-    ws.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-      handleStreamMessage(data);
-    };
-
-    ws.onerror = () => {
-      statusEl.textContent = "WebSocket-Verbindung fehlgeschlagen, nutze Fallback...";
-      // Fallback: if WebSocket fails, fall back to REST
-      if (mediaRecorder && mediaRecorder.state === "recording") {
-        fallbackToRest(stream);
       }
     };
 
-    ws.onclose = () => {
-      ws = null;
+    mediaRecorder.onstop = () => {
+      stream.getTracks().forEach(t => t.stop());
+      cancelAnimationFrame(animationFrame);
+      if (audioContext) {
+        audioContext.close();
+        audioContext = null;
+      }
+      clearCanvas();
     };
+
+    mediaRecorder.start(500);
+
+    // Try WebSocket connection in parallel
+    try {
+      ws = new WebSocket(wsUrl("/ws/transcribe"));
+      ws.binaryType = "arraybuffer";
+
+      ws.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        handleStreamMessage(data);
+      };
+
+      ws.onerror = () => {
+        console.warn("WebSocket failed, will use REST on stop");
+        ws = null;
+      };
+
+      ws.onclose = () => { ws = null; };
+    } catch {
+      console.warn("WebSocket not available, will use REST");
+      ws = null;
+    }
 
     isRecording = true;
     recordBtn.classList.add("recording");
@@ -169,28 +172,21 @@ function stopRecording() {
     mediaRecorder.stop();
   }
 
-  // Send stop signal via WebSocket
   if (ws && ws.readyState === WebSocket.OPEN) {
+    // WebSocket connected — send stop signal, results come via WS messages
     ws.send(JSON.stringify({ type: "stop", mode: currentMode, preset: currentMode }));
+  } else {
+    // No WebSocket — send all audio via REST (works on all browsers)
+    const blob = new Blob(_localAudioChunks, { type: getOpusMimeType() });
+    _localAudioChunks = [];
+    if (blob.size > 0) {
+      sendAudioRest(blob);
+    } else {
+      statusEl.textContent = "Keine Audio-Daten";
+      recordBtn.classList.remove("processing");
+      recordBtn.querySelector(".label").textContent = "Halten zum Sprechen";
+    }
   }
-}
-
-// --- REST fallback for when WebSocket is unavailable ---
-function fallbackToRest(stream) {
-  const fallbackRecorder = new MediaRecorder(stream, { mimeType: getOpusMimeType() });
-  const chunks = [];
-  fallbackRecorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
-  fallbackRecorder.onstop = async () => {
-    stream.getTracks().forEach(t => t.stop());
-    if (chunks.length === 0) return;
-    const blob = new Blob(chunks, { type: fallbackRecorder.mimeType });
-    await sendAudioRest(blob);
-  };
-  fallbackRecorder.start();
-  // Stop after current recording ends
-  setTimeout(() => {
-    if (fallbackRecorder.state === "recording") fallbackRecorder.stop();
-  }, 100);
 }
 
 async function sendAudioRest(blob) {
