@@ -657,10 +657,16 @@ def _build_preset_menu_items():
 
 
 def build_menu():
+    last_preview = (last_result_text[:30] + "...") if len(last_result_text) > 30 else last_result_text
     return pystray.Menu(
-        pystray.MenuItem("Parley", show_tray_window, default=True),
-        pystray.Menu.SEPARATOR,
         pystray.MenuItem("Preset", pystray.Menu(*_build_preset_menu_items())),
+        pystray.Menu.SEPARATOR,
+        pystray.MenuItem(
+            f"Letzte: {last_preview}" if last_result_text else "Kein letztes Ergebnis",
+            copy_last_result,
+            enabled=bool(last_result_text),
+        ),
+        pystray.Menu.SEPARATOR,
         pystray.MenuItem("Auto-Paste", toggle_auto_paste,
                          checked=lambda item: cfg.get("auto_paste", True)),
         pystray.MenuItem("Senden", pystray.Menu(
@@ -668,6 +674,9 @@ def build_menu():
             pystray.MenuItem("Auto (Enter)", set_send_mode("auto"), checked=get_send_mode_checked("auto")),
             pystray.MenuItem("Sprachbefehl", set_send_mode("voice"), checked=get_send_mode_checked("voice")),
         )),
+        pystray.Menu.SEPARATOR,
+        pystray.MenuItem(f"Halten: {cfg.get('hotkey_hold', '')}", lambda *a: None, enabled=False),
+        pystray.MenuItem(f"Freihand: {cfg.get('hotkey_toggle', '')}", lambda *a: None, enabled=False),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Einstellungen...", open_settings),
         pystray.MenuItem("Beenden", quit_app),
