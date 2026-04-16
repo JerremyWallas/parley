@@ -11,6 +11,7 @@ a = Analysis(
         'pynput.mouse._win32',
         'settings_ui',
         'overlay',
+        'tray_window',
         'icon',
         'urllib3',
         'websocket',

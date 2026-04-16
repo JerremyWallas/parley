@@ -13,6 +13,7 @@ import text_inserter
 import settings_ui
 from overlay import RecordingOverlay
 from icon import create_tray_icon
+from tray_window import TrayWindow
 
 # Suppress SSL warnings for self-signed certs
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -29,6 +30,7 @@ stop_parts = []
 pressed_keys = set()
 tray_icon = None
 overlay = RecordingOverlay()
+tray_window = TrayWindow()
 last_result_text = ""
 _active_mode = None  # None, "hold", or "toggle"
 _streaming_session = None
@@ -587,6 +589,35 @@ def copy_last_result(icon, item):
         logger.info("No previous result to copy")
 
 
+def show_tray_window(icon=None, item=None):
+    """Open the custom tray window with current state."""
+    state = {
+        "connected": _server_connected,
+        "active_preset": _active_preset_id,
+        "presets": _cached_presets,
+        "last_result": last_result_text,
+        "auto_paste": cfg.get("auto_paste", True),
+        "send_mode": cfg.get("send_mode", "off"),
+        "hotkey_hold": cfg.get("hotkey_hold", ""),
+        "hotkey_toggle": cfg.get("hotkey_toggle", ""),
+    }
+    tray_window.show(state=state)
+
+
+def _setup_tray_window_callbacks():
+    """Wire up the TrayWindow actions to app functions."""
+    tray_window.on("set_preset", lambda pid: _switch_preset_with_notification(pid))
+    tray_window.on("copy_last", lambda: (
+        copy_last_result(None, None),
+    ))
+    tray_window.on("toggle_auto_paste", lambda: toggle_auto_paste(None, None))
+    tray_window.on("set_send_mode", lambda mode: (
+        set_send_mode(mode)(None, None),
+    ))
+    tray_window.on("open_settings", lambda: open_settings(None, None))
+    tray_window.on("quit", lambda: tray_icon.stop() if tray_icon else None)
+
+
 def quit_app(icon, item):
     icon.stop()
 
@@ -604,26 +635,9 @@ def _build_preset_menu_items():
 
 
 def build_menu():
-    last_preview = (last_result_text[:30] + "...") if len(last_result_text) > 30 else last_result_text
     return pystray.Menu(
-        pystray.MenuItem("Preset", pystray.Menu(*_build_preset_menu_items())),
-        pystray.Menu.SEPARATOR,
-        pystray.MenuItem(
-            f"Letzte: {last_preview}" if last_result_text else "Kein letztes Ergebnis",
-            copy_last_result,
-            enabled=bool(last_result_text),
-        ),
-        pystray.Menu.SEPARATOR,
-        pystray.MenuItem("Auto-Paste", toggle_auto_paste,
-                         checked=lambda item: cfg.get("auto_paste", True)),
-        pystray.MenuItem("Senden", pystray.Menu(
-            pystray.MenuItem("Aus", set_send_mode("off"), checked=get_send_mode_checked("off")),
-            pystray.MenuItem("Auto (Enter)", set_send_mode("auto"), checked=get_send_mode_checked("auto")),
-            pystray.MenuItem("Sprachbefehl", set_send_mode("voice"), checked=get_send_mode_checked("voice")),
-        )),
-        pystray.Menu.SEPARATOR,
-        pystray.MenuItem(f"Halten: {cfg.get('hotkey_hold', '')}", lambda *a: None, enabled=False),
-        pystray.MenuItem(f"Freihand: {cfg.get('hotkey_toggle', '')}", lambda *a: None, enabled=False),
+        # Left-click opens custom window (default=True makes it the left-click action)
+        pystray.MenuItem("Parley oeffnen", show_tray_window, default=True),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Einstellungen...", open_settings),
         pystray.MenuItem("Beenden", quit_app),
@@ -664,11 +678,14 @@ def main():
     logger.info(f"Toggle hotkey: {toggle_parts}")
     logger.info(f"Stop key: {stop_parts}")
 
+    # Wire up custom tray window callbacks
+    _setup_tray_window_callbacks()
+
     # Start keyboard listener
     listener = keyboard.Listener(on_press=on_key_press, on_release=on_key_release)
     listener.start()
 
-    # Create and run tray icon
+    # Create and run tray icon (left-click opens custom window, right-click shows minimal menu)
     tray_icon = pystray.Icon(
         "parley",
         create_tray_icon(connected=_server_connected),
