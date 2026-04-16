@@ -636,8 +636,16 @@ def _build_preset_menu_items():
 
 def build_menu():
     return pystray.Menu(
-        # Left-click opens custom window (default=True makes it the left-click action)
-        pystray.MenuItem("Parley oeffnen", show_tray_window, default=True),
+        pystray.MenuItem("Parley", show_tray_window, default=True),
+        pystray.Menu.SEPARATOR,
+        pystray.MenuItem("Preset", pystray.Menu(*_build_preset_menu_items())),
+        pystray.MenuItem("Auto-Paste", toggle_auto_paste,
+                         checked=lambda item: cfg.get("auto_paste", True)),
+        pystray.MenuItem("Senden", pystray.Menu(
+            pystray.MenuItem("Aus", set_send_mode("off"), checked=get_send_mode_checked("off")),
+            pystray.MenuItem("Auto (Enter)", set_send_mode("auto"), checked=get_send_mode_checked("auto")),
+            pystray.MenuItem("Sprachbefehl", set_send_mode("voice"), checked=get_send_mode_checked("voice")),
+        )),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Einstellungen...", open_settings),
         pystray.MenuItem("Beenden", quit_app),
