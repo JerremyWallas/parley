@@ -3,7 +3,9 @@ package com.antigravity.speechtotext
 import android.accessibilityservice.AccessibilityService
 import android.content.Context
 import android.graphics.PixelFormat
+import android.graphics.Rect
 import android.os.Bundle
+import android.util.DisplayMetrics
 import android.util.Log
 import android.view.Gravity
 import android.view.LayoutInflater
@@ -20,13 +22,22 @@ class SpeechOverlayService : AccessibilityService() {
 
     companion object {
         private const val TAG = "SpeechOverlay"
+        private const val PREFS_KEY = "stt_prefs"
+        private const val PREF_BUTTON_X = "overlay_btn_x"
+        private const val PREF_BUTTON_Y = "overlay_btn_y"
+        private const val PREF_HAS_CUSTOM_POS = "overlay_has_custom_pos"
     }
 
     private lateinit var windowManager: WindowManager
     private lateinit var overlayView: View
     private lateinit var overlayBtn: ImageView
+    private lateinit var layoutParams: WindowManager.LayoutParams
     private var audioRecorder: AudioRecorder? = null
     private var isRecording = false
+    private var isOverlayVisible = false
+    private var isKeyboardVisible = false
+
+    // Touch tracking
     private var initialX = 0
     private var initialY = 0
     private var initialTouchX = 0f
@@ -36,13 +47,13 @@ class SpeechOverlayService : AccessibilityService() {
     override fun onServiceConnected() {
         super.onServiceConnected()
         Log.i(TAG, "Service connected")
-        createOverlay()
+        initOverlay()
     }
 
-    private fun createOverlay() {
+    private fun initOverlay() {
         windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
 
-        val layoutParams = WindowManager.LayoutParams(
+        layoutParams = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
@@ -51,26 +62,113 @@ class SpeechOverlayService : AccessibilityService() {
             PixelFormat.TRANSLUCENT,
         )
         layoutParams.gravity = Gravity.TOP or Gravity.START
-        layoutParams.x = 0
-        layoutParams.y = 300
+
+        // Load saved position or use default (right side, middle)
+        val prefs = getSharedPreferences(PREFS_KEY, MODE_PRIVATE)
+        if (prefs.getBoolean(PREF_HAS_CUSTOM_POS, false)) {
+            layoutParams.x = prefs.getInt(PREF_BUTTON_X, 0)
+            layoutParams.y = prefs.getInt(PREF_BUTTON_Y, 300)
+        } else {
+            // Default: right edge, middle of screen
+            val metrics = DisplayMetrics()
+            @Suppress("DEPRECATION")
+            windowManager.defaultDisplay.getMetrics(metrics)
+            layoutParams.x = metrics.widthPixels - 80
+            layoutParams.y = metrics.heightPixels / 2
+        }
 
         overlayView = LayoutInflater.from(this).inflate(R.layout.overlay_button, null)
         overlayBtn = overlayView.findViewById(R.id.overlayBtn)
 
         overlayBtn.setOnTouchListener { _, event ->
-            handleTouch(event, layoutParams)
+            handleTouch(event)
             true
         }
 
-        windowManager.addView(overlayView, layoutParams)
-        Log.i(TAG, "Overlay created")
+        // Don't add view yet — wait for keyboard
+        Log.i(TAG, "Overlay initialized, waiting for keyboard")
     }
 
-    private fun handleTouch(event: MotionEvent, params: WindowManager.LayoutParams) {
+    private fun showOverlay() {
+        if (isOverlayVisible) return
+        try {
+            windowManager.addView(overlayView, layoutParams)
+            isOverlayVisible = true
+            Log.i(TAG, "Overlay shown (keyboard visible)")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to show overlay", e)
+        }
+    }
+
+    private fun hideOverlay() {
+        if (!isOverlayVisible) return
+        // Cancel any ongoing recording
+        if (isRecording) cancelRecording()
+        try {
+            windowManager.removeView(overlayView)
+            isOverlayVisible = false
+            Log.i(TAG, "Overlay hidden (keyboard hidden)")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to hide overlay", e)
+        }
+    }
+
+    private fun saveButtonPosition() {
+        getSharedPreferences(PREFS_KEY, MODE_PRIVATE).edit()
+            .putInt(PREF_BUTTON_X, layoutParams.x)
+            .putInt(PREF_BUTTON_Y, layoutParams.y)
+            .putBoolean(PREF_HAS_CUSTOM_POS, true)
+            .apply()
+    }
+
+    // --- Keyboard Detection ---
+
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        if (event == null) return
+
+        when (event.eventType) {
+            AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> {
+                checkKeyboardState()
+            }
+            AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> {
+                // Some keyboards trigger content changes
+                checkKeyboardState()
+            }
+        }
+    }
+
+    private fun checkKeyboardState() {
+        val wasVisible = isKeyboardVisible
+        isKeyboardVisible = isInputMethodVisible()
+
+        if (isKeyboardVisible && !wasVisible) {
+            showOverlay()
+        } else if (!isKeyboardVisible && wasVisible) {
+            hideOverlay()
+        }
+    }
+
+    private fun isInputMethodVisible(): Boolean {
+        // Check all windows for an input method window
+        try {
+            for (window in windows) {
+                if (window.type == android.accessibilityservice.AccessibilityWindowInfo.TYPE_INPUT_METHOD) {
+                    return true
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not check windows: ${e.message}")
+        }
+        return false
+    }
+
+    // --- Touch Handling ---
+
+    private fun handleTouch(event: MotionEvent) {
         when (event.action) {
             MotionEvent.ACTION_DOWN -> {
-                initialX = params.x
-                initialY = params.y
+                initialX = layoutParams.x
+                initialY = layoutParams.y
                 initialTouchX = event.rawX
                 initialTouchY = event.rawY
                 hasMoved = false
@@ -82,9 +180,11 @@ class SpeechOverlayService : AccessibilityService() {
                 val dy = event.rawY - initialTouchY
                 if (dx * dx + dy * dy > 100) { // Moved more than 10px
                     hasMoved = true
-                    params.x = initialX + dx.toInt()
-                    params.y = initialY + dy.toInt()
-                    windowManager.updateViewLayout(overlayView, params)
+                    layoutParams.x = initialX + dx.toInt()
+                    layoutParams.y = initialY + dy.toInt()
+                    if (isOverlayVisible) {
+                        windowManager.updateViewLayout(overlayView, layoutParams)
+                    }
 
                     // Cancel recording if dragging
                     if (isRecording) {
@@ -94,16 +194,22 @@ class SpeechOverlayService : AccessibilityService() {
             }
 
             MotionEvent.ACTION_UP -> {
-                if (!hasMoved && isRecording) {
+                if (hasMoved) {
+                    // Save new position after drag
+                    saveButtonPosition()
+                } else if (isRecording) {
                     stopRecordingAndTranscribe()
                 }
             }
 
             MotionEvent.ACTION_CANCEL -> {
                 cancelRecording()
+                if (hasMoved) saveButtonPosition()
             }
         }
     }
+
+    // --- Recording ---
 
     private fun startRecording() {
         try {
@@ -139,7 +245,7 @@ class SpeechOverlayService : AccessibilityService() {
             return
         }
 
-        val prefs = getSharedPreferences("stt_prefs", MODE_PRIVATE)
+        val prefs = getSharedPreferences(PREFS_KEY, MODE_PRIVATE)
         val serverUrl = prefs.getString("server_url", "") ?: ""
         val mode = prefs.getString("mode", "raw") ?: "raw"
 
@@ -148,6 +254,8 @@ class SpeechOverlayService : AccessibilityService() {
             return
         }
 
+        // Show processing indicator
+        overlayBtn.alpha = 0.5f
         Toast.makeText(this, "Verarbeite...", Toast.LENGTH_SHORT).show()
 
         thread {
@@ -181,6 +289,10 @@ class SpeechOverlayService : AccessibilityService() {
                 overlayBtn.post {
                     Toast.makeText(this, "Fehler: ${e.message}", Toast.LENGTH_SHORT).show()
                 }
+            } finally {
+                overlayBtn.post {
+                    overlayBtn.alpha = 1.0f
+                }
             }
         }
     }
@@ -198,19 +310,13 @@ class SpeechOverlayService : AccessibilityService() {
         return null
     }
 
-    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        // Not needed, we use the overlay
-    }
-
     override fun onInterrupt() {
         Log.w(TAG, "Service interrupted")
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        if (::overlayView.isInitialized) {
-            windowManager.removeView(overlayView)
-        }
+        hideOverlay()
         cancelRecording()
     }
 }

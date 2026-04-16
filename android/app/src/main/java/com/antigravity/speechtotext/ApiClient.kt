@@ -46,6 +46,32 @@ object ApiClient {
             .build()
     }
 
+    data class Preset(val id: String, val name: String)
+
+    fun fetchPresets(serverUrl: String): List<Preset> {
+        val url = "${serverUrl.trimEnd('/')}/api/presets"
+        val request = Request.Builder().url(url).get().build()
+        val response = client.newCall(request).execute()
+        if (!response.isSuccessful) return emptyList()
+
+        val json = JSONObject(response.body!!.string())
+        val presets = mutableListOf<Preset>()
+        val arr = json.optJSONArray("presets") ?: return emptyList()
+        for (i in 0 until arr.length()) {
+            val p = arr.getJSONObject(i)
+            presets.add(Preset(p.optString("id", ""), p.optString("name", "")))
+        }
+        return presets
+    }
+
+    fun setActivePreset(serverUrl: String, presetId: String) {
+        val url = "${serverUrl.trimEnd('/')}/api/presets/active"
+        val body = JSONObject().put("id", presetId).toString()
+            .toRequestBody("application/json".toMediaType())
+        val request = Request.Builder().url(url).put(body).build()
+        client.newCall(request).execute()
+    }
+
     fun transcribe(serverUrl: String, audioData: ByteArray, mode: String): TranscriptionResult {
         val url = "${serverUrl.trimEnd('/')}/api/transcribe"
 
