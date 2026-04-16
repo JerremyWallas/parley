@@ -194,32 +194,38 @@ def on_key_press(key):
     key_str = key_to_str(key)
     pressed_keys.add(key_str)
 
-    # Stop key pressed while in toggle mode — always check first
+    # If currently recording in toggle mode: any of these stops it
     if audio_rec.is_recording and _active_mode == "toggle":
+        # Stop key
         if key_str in stop_parts:
             _stop_recording()
             return
-
-    # Check preset hotkeys (only when not recording)
-    if not audio_rec.is_recording:
-        for hotkey_str, (parts, preset_id) in preset_hotkey_parts.items():
-            if all(part in pressed_keys for part in parts):
-                _switch_preset_with_notification(preset_id)
-                return
-
-    # Toggle hotkey pressed (check BEFORE hold — toggle typically has more keys,
-    # and if hold keys are a subset of toggle keys, hold would wrongly trigger first)
-    if toggle_parts and all(part in pressed_keys for part in toggle_parts):
-        if not audio_rec.is_recording:
-            _active_mode = "toggle"
-            _start_recording()
-            logger.info("Toggle mode: recording started (press again or stop key to finish)")
-        elif _active_mode == "toggle":
+        # Any toggle hotkey part pressed again (user doesn't need to press all at once)
+        if key_str in toggle_parts:
             _stop_recording()
+            return
+        # Don't process any other hotkeys while in toggle recording
         return
 
-    # Hold hotkey pressed — only if not already recording in toggle mode
-    if hold_parts and not audio_rec.is_recording and all(part in pressed_keys for part in hold_parts):
+    # If currently recording in hold mode: ignore new hotkeys
+    if audio_rec.is_recording and _active_mode == "hold":
+        return
+
+    # Not recording — check preset hotkeys
+    for hotkey_str, (parts, preset_id) in preset_hotkey_parts.items():
+        if all(part in pressed_keys for part in parts):
+            _switch_preset_with_notification(preset_id)
+            return
+
+    # Toggle hotkey: all parts pressed → start toggle recording
+    if toggle_parts and all(part in pressed_keys for part in toggle_parts):
+        _active_mode = "toggle"
+        _start_recording()
+        logger.info("Toggle mode: recording started (press any toggle key or stop key to finish)")
+        return
+
+    # Hold hotkey: all parts pressed → start hold recording
+    if hold_parts and all(part in pressed_keys for part in hold_parts):
         _active_mode = "hold"
         _start_recording()
         return
@@ -229,11 +235,9 @@ def on_key_release(key):
     global _active_mode
     key_str = key_to_str(key)
 
-    # Hold mode only: stop when any hold hotkey part is released
+    # Hold mode: stop when any hold hotkey part is released
     if audio_rec.is_recording and _active_mode == "hold" and key_str in hold_parts:
         _stop_recording()
-
-    # Toggle mode: nothing on release — stop is in on_key_press
 
     pressed_keys.discard(key_str)
 

@@ -375,13 +375,68 @@ saveCorrection.addEventListener("click", async () => {
 });
 
 // --- Record button events (mouse + touch) ---
-recordBtn.addEventListener("mousedown", (e) => { e.preventDefault(); startRecording(); });
-recordBtn.addEventListener("mouseup", (e) => { e.preventDefault(); stopRecording(); });
-recordBtn.addEventListener("mouseleave", () => { if (isRecording) stopRecording(); });
+// Dual mode: short click = toggle, long hold = hold-to-record
+let _holdTimer = null;
+let _isHolding = false;
 
-recordBtn.addEventListener("touchstart", (e) => { e.preventDefault(); startRecording(); });
-recordBtn.addEventListener("touchend", (e) => { e.preventDefault(); stopRecording(); });
-recordBtn.addEventListener("touchcancel", () => { if (isRecording) stopRecording(); });
+recordBtn.addEventListener("mousedown", (e) => {
+  e.preventDefault();
+  if (isRecording) {
+    // Second click — stop recording (toggle off)
+    stopRecording();
+    return;
+  }
+  _isHolding = false;
+  _holdTimer = setTimeout(() => { _isHolding = true; }, 300);
+  startRecording();
+});
+
+recordBtn.addEventListener("mouseup", (e) => {
+  e.preventDefault();
+  clearTimeout(_holdTimer);
+  if (_isHolding) {
+    // Was a hold — stop on release
+    stopRecording();
+  }
+  // Short click — don't stop, it's a toggle (click again to stop)
+  _isHolding = false;
+});
+recordBtn.addEventListener("mouseleave", () => {
+  clearTimeout(_holdTimer);
+  if (_isHolding && isRecording) stopRecording();
+  _isHolding = false;
+});
+
+// Touch: same dual mode
+let _touchHoldTimer = null;
+let _isTouchHolding = false;
+
+recordBtn.addEventListener("touchstart", (e) => {
+  e.preventDefault();
+  if (isRecording) {
+    stopRecording();
+    return;
+  }
+  _isTouchHolding = false;
+  _touchHoldTimer = setTimeout(() => { _isTouchHolding = true; }, 300);
+  startRecording();
+});
+
+recordBtn.addEventListener("touchend", (e) => {
+  e.preventDefault();
+  clearTimeout(_touchHoldTimer);
+  if (_isTouchHolding) {
+    stopRecording();
+  }
+  // Short tap — toggle, tap again to stop
+  _isTouchHolding = false;
+});
+
+recordBtn.addEventListener("touchcancel", () => {
+  clearTimeout(_touchHoldTimer);
+  if (_isTouchHolding && isRecording) stopRecording();
+  _isTouchHolding = false;
+});
 
 recordBtn.addEventListener("contextmenu", (e) => e.preventDefault());
 
