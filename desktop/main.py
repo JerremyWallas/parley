@@ -268,7 +268,8 @@ def _on_done(raw_text: str, processed_text: str):
             tray_icon.menu = build_menu()
         # Save to server history
         _save_to_server_history(raw_text, text)
-        handle_send_mode()
+        # Run send mode in separate thread (don't block WebSocket callback thread)
+        threading.Thread(target=handle_send_mode, daemon=True).start()
     else:
         logger.warning("Empty transcription result")
         update_icon()
@@ -308,10 +309,14 @@ def _show_error_popup(message: str):
 
         def _show():
             import tkinter as tk
-            root = tk.Tk()
+            from tkinter import messagebox
+            # Use Toplevel if a Tk root already exists, otherwise create one
+            if tk._default_root:
+                root = tk.Toplevel()
+            else:
+                root = tk.Tk()
             root.withdraw()
             root.attributes("-topmost", True)
-            from tkinter import messagebox
             if "connect" in message.lower() or "refused" in message.lower() or "unreachable" in message.lower() or "timed out" in message.lower():
                 messagebox.showerror(
                     "Parley — Server nicht erreichbar",
@@ -406,13 +411,28 @@ def _voice_send_listen(max_seconds: float, triggers: list[str]) -> bool:
                 speech_blocks.append(block)
                 silent_count += 1
 
-    stream = sd.InputStream(
-        samplerate=sample_rate,
-        channels=1,
-        dtype="int16",
-        blocksize=block_size,
-        callback=audio_callback,
-    )
+    # Use same device settings as main recorder for compatibility
+    from recorder import _wasapi_input_device, _wasapi_settings
+    stream_kwargs = {
+        "samplerate": sample_rate,
+        "channels": 1,
+        "dtype": "int16",
+        "blocksize": block_size,
+        "callback": audio_callback,
+    }
+    if _wasapi_input_device is not None:
+        stream_kwargs["device"] = _wasapi_input_device
+    if _wasapi_settings is not None:
+        stream_kwargs["extra_settings"] = _wasapi_settings
+
+    try:
+        stream = sd.InputStream(**stream_kwargs)
+    except sd.PortAudioError:
+        # Fallback to default device
+        stream = sd.InputStream(
+            samplerate=sample_rate, channels=1, dtype="int16",
+            blocksize=block_size, callback=audio_callback,
+        )
     stream.start()
 
     start_time = time.time()
@@ -517,6 +537,20 @@ def toggle_auto_paste(icon, item):
     logger.info(f"Auto-paste: {cfg['auto_paste']}")
 
 
+def set_send_mode(mode: str):
+    def _set(icon, item):
+        cfg["send_mode"] = mode
+        config.save(cfg)
+        logger.info(f"Send mode: {mode}")
+    return _set
+
+
+def get_send_mode_checked(mode: str):
+    def _check(item):
+        return cfg.get("send_mode", "off") == mode
+    return _check
+
+
 def open_settings(icon, item):
     """Open settings window and apply changes."""
     logger.info("Opening settings window...")
@@ -543,22 +577,14 @@ def open_settings(icon, item):
 
 
 def copy_last_result(icon, item):
-    """Copy the last transcription result to clipboard."""
+    """Copy the last transcription result to clipboard and show notification."""
     if last_result_text:
         import pyperclip
         pyperclip.copy(last_result_text)
         logger.info(f"Copied last result to clipboard: {last_result_text[:50]}...")
+        overlay.show_notification("In Zwischenablage kopiert")
     else:
         logger.info("No previous result to copy")
-
-
-def paste_last_result(icon, item):
-    """Paste the last transcription result into the active window."""
-    if last_result_text:
-        text_inserter.insert_text(last_result_text, auto_paste=cfg.get("auto_paste", True))
-        logger.info(f"Re-pasted last result: {last_result_text[:50]}...")
-    else:
-        logger.info("No previous result to paste")
 
 
 def quit_app(icon, item):
@@ -584,18 +610,20 @@ def build_menu():
         pystray.Menu.SEPARATOR,
         pystray.MenuItem(
             f"Letzte: {last_preview}" if last_result_text else "Kein letztes Ergebnis",
-            pystray.Menu(
-                pystray.MenuItem("In Zwischenablage kopieren", copy_last_result),
-                pystray.MenuItem("Nochmal einfuegen", paste_last_result),
-            ),
+            copy_last_result,
             enabled=bool(last_result_text),
         ),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Auto-Paste", toggle_auto_paste,
                          checked=lambda item: cfg.get("auto_paste", True)),
+        pystray.MenuItem("Senden", pystray.Menu(
+            pystray.MenuItem("Aus", set_send_mode("off"), checked=get_send_mode_checked("off")),
+            pystray.MenuItem("Auto (Enter)", set_send_mode("auto"), checked=get_send_mode_checked("auto")),
+            pystray.MenuItem("Sprachbefehl", set_send_mode("voice"), checked=get_send_mode_checked("voice")),
+        )),
+        pystray.Menu.SEPARATOR,
         pystray.MenuItem(f"Halten: {cfg.get('hotkey_hold', '')}", lambda *a: None, enabled=False),
         pystray.MenuItem(f"Freihand: {cfg.get('hotkey_toggle', '')}", lambda *a: None, enabled=False),
-        pystray.MenuItem(f"Server: {cfg['server_url']}", lambda *a: None, enabled=False),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Einstellungen...", open_settings),
         pystray.MenuItem("Beenden", quit_app),

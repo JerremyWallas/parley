@@ -119,7 +119,7 @@ class SettingsWindow:
         return btn
 
     def show(self):
-        self.win = tk.Tk()
+        self.win = tk.Toplevel() if tk._default_root else tk.Tk()
         self.win.title("Parley")
         self.win.resizable(False, False)
         self.win.configure(bg=BG)
