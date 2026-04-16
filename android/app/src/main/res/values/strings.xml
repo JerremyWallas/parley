@@ -9,6 +9,8 @@
     <string name="mode_cleanup">Cleanup</string>
     <string name="mode_rephrase">Reformulieren</string>
     <string name="enable_service">Accessibility Service aktivieren</string>
+    <string name="open_web_settings">Erweiterte Einstellungen oeffnen</string>
+    <string name="web_settings_title">Erweiterte Einstellungen</string>
     <string name="save">Speichern</string>
     <string name="recording">Aufnahme...</string>
     <string name="processing">Verarbeite...</string>

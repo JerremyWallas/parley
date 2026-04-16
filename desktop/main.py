@@ -1,10 +1,13 @@
 import ctypes
+import json
 import sys
 import threading
 import logging
+import time
 import tkinter as tk
 import urllib3
 import httpx
+from pathlib import Path
 from pynput import keyboard
 import pystray
 
@@ -62,6 +65,55 @@ _cached_presets = []  # list of preset dicts from server
 _active_preset_id = "raw"  # currently active preset id
 _server_connected = False
 preset_hotkey_parts = {}  # {"<ctrl>+1": (["<ctrl>", "1"], "raw"), ...}
+_pending_audio_dir = Path.home() / ".config" / "parley" / "pending_audio"
+_pending_wav_bytes = None  # WAV bytes of last recording (kept for retry)
+_pending_mode = None  # mode/preset used for last recording
+_retry_in_progress = False
+
+
+def _save_pending_audio(wav_bytes: bytes, mode: str):
+    """Save audio to disk so it survives crashes and can be retried."""
+    global _pending_wav_bytes, _pending_mode
+    _pending_wav_bytes = wav_bytes
+    _pending_mode = mode
+    try:
+        _pending_audio_dir.mkdir(parents=True, exist_ok=True)
+        (_pending_audio_dir / "recording.wav").write_bytes(wav_bytes)
+        (_pending_audio_dir / "recording.json").write_text(
+            json.dumps({"mode": mode, "timestamp": time.time()}), encoding="utf-8"
+        )
+        logger.debug("Pending audio saved to disk")
+    except Exception as e:
+        logger.warning(f"Could not save pending audio: {e}")
+
+
+def _cleanup_pending_audio():
+    """Remove pending audio after successful transcription."""
+    global _pending_wav_bytes, _pending_mode
+    _pending_wav_bytes = None
+    _pending_mode = None
+    try:
+        wav = _pending_audio_dir / "recording.wav"
+        meta = _pending_audio_dir / "recording.json"
+        if wav.exists():
+            wav.unlink()
+        if meta.exists():
+            meta.unlink()
+    except Exception as e:
+        logger.debug(f"Pending audio cleanup: {e}")
+
+
+def _cleanup_stale_pending_audio():
+    """Remove pending audio files older than 1 hour (startup cleanup)."""
+    try:
+        meta = _pending_audio_dir / "recording.json"
+        if meta.exists():
+            data = json.loads(meta.read_text(encoding="utf-8"))
+            if time.time() - data.get("timestamp", 0) > 3600:
+                _cleanup_pending_audio()
+                logger.info("Cleaned up stale pending audio")
+    except Exception:
+        pass
 
 
 def _check_server_connection():
@@ -207,6 +259,8 @@ def _stop_recording():
     update_icon(processing=True)
 
     if _streaming_session and wav_bytes:
+        # Save audio BEFORE sending so it survives network failures
+        _save_pending_audio(wav_bytes, _active_preset_id)
         _streaming_session.send_audio(wav_bytes)
         _streaming_session.finish()
     elif _streaming_session:
@@ -286,6 +340,7 @@ def _on_done(raw_text: str, processed_text: str):
 
     if text:
         last_result_text = text
+        _cleanup_pending_audio()
         text_inserter.insert_text(text, auto_paste=cfg.get("auto_paste", True))
         logger.info(f"Inserted: {text[:80]}...")
         update_icon()
@@ -298,6 +353,7 @@ def _on_done(raw_text: str, processed_text: str):
         threading.Thread(target=handle_send_mode, daemon=True).start()
     else:
         logger.warning("Empty transcription result")
+        _cleanup_pending_audio()
         update_icon()
 
 
@@ -317,15 +373,51 @@ def _save_to_server_history(raw_text: str, processed_text: str):
 
 
 def _on_error(message: str):
-    """Called on WebSocket or server error — show notification."""
+    """Called on WebSocket or server error — attempt auto-retry via REST."""
     global _streaming_session
     _streaming_session = None
-    update_icon()
 
     logger.error(f"Server error: {message}")
 
-    # Show popup notification
-    _show_error_popup(message)
+    if _pending_wav_bytes and _pending_mode:
+        # Auto-retry in background thread using REST fallback
+        wav = _pending_wav_bytes
+        mode = _pending_mode
+        threading.Thread(target=_auto_retry, args=(wav, mode), daemon=True).start()
+    else:
+        update_icon()
+        _show_error_popup(message)
+
+
+def _auto_retry(wav_bytes: bytes, mode: str):
+    """Attempt transcription via REST with exponential backoff."""
+    global _retry_in_progress
+    _retry_in_progress = True
+    update_icon(retrying=True)
+    overlay.show("retrying")
+
+    def _on_retry(attempt, max_retries):
+        logger.info(f"Retry attempt {attempt + 1}/{max_retries + 1}")
+        overlay.show_notification(f"Erneuter Versuch ({attempt + 1}/{max_retries + 1})...")
+
+    try:
+        result = api_client.transcribe_with_retry(
+            cfg["server_url"], wav_bytes, mode,
+            max_retries=3, on_retry=_on_retry,
+        )
+        _retry_in_progress = False
+        raw = result.get("raw_text", "")
+        processed = result.get("processed_text", raw)
+        logger.info("Auto-retry succeeded")
+        _on_done(raw, processed)
+    except Exception as e:
+        _retry_in_progress = False
+        update_icon()
+        logger.error(f"Auto-retry exhausted: {e}")
+        _show_error_popup(str(e))
+        # Update tray menu to show retry option
+        if tray_icon:
+            tray_icon.menu = build_menu()
 
 
 def _show_error_popup(message: str):
@@ -524,7 +616,8 @@ def _transcribe_blocks(blocks, sample_rate: int) -> str:
 # --- Tray icon ---
 
 
-def update_icon(recording: bool = False, processing: bool = False, listening: bool = False):
+def update_icon(recording: bool = False, processing: bool = False,
+                listening: bool = False, retrying: bool = False):
     global tray_icon
     if tray_icon is None:
         return
@@ -534,6 +627,9 @@ def update_icon(recording: bool = False, processing: bool = False, listening: bo
     elif processing:
         tray_icon.icon = create_tray_icon("#f59e0b", connected=_server_connected)
         overlay.update_state("processing")
+    elif retrying:
+        tray_icon.icon = create_tray_icon("#f97316", connected=_server_connected)
+        overlay.show("retrying")
     elif listening:
         tray_icon.icon = create_tray_icon("#22c55e", connected=_server_connected)
         overlay.update_state("listening")
@@ -600,6 +696,27 @@ def open_settings(icon, item):
     threading.Thread(target=_open, daemon=True).start()
 
 
+def retry_last_recording(icon, item):
+    """Manual retry: re-send pending audio via REST with retries."""
+    wav = _pending_wav_bytes
+    mode = _pending_mode
+    if not wav:
+        # Try loading from disk
+        try:
+            wav_path = _pending_audio_dir / "recording.wav"
+            meta_path = _pending_audio_dir / "recording.json"
+            if wav_path.exists() and meta_path.exists():
+                wav = wav_path.read_bytes()
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                mode = meta.get("mode", "raw")
+        except Exception:
+            pass
+    if wav:
+        threading.Thread(target=_auto_retry, args=(wav, mode or "raw"), daemon=True).start()
+    else:
+        overlay.show_notification("Kein Audio zum Wiederholen")
+
+
 def copy_last_result(icon, item):
     """Copy the last transcription result to clipboard and show notification."""
     if last_result_text:
@@ -658,6 +775,7 @@ def _build_preset_menu_items():
 
 def build_menu():
     last_preview = (last_result_text[:30] + "...") if len(last_result_text) > 30 else last_result_text
+    has_pending = _pending_wav_bytes is not None or (_pending_audio_dir / "recording.wav").exists()
     return pystray.Menu(
         pystray.MenuItem("Preset", pystray.Menu(*_build_preset_menu_items())),
         pystray.Menu.SEPARATOR,
@@ -665,6 +783,12 @@ def build_menu():
             f"Letzte: {last_preview}" if last_result_text else "Kein letztes Ergebnis",
             copy_last_result,
             enabled=bool(last_result_text),
+        ),
+        pystray.MenuItem(
+            "Erneut versuchen",
+            retry_last_recording,
+            enabled=has_pending,
+            visible=has_pending,
         ),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("Auto-Paste", toggle_auto_paste,
@@ -699,6 +823,9 @@ def main():
 
     logger.info("Parley Desktop Client")
     logger.info(f"Server: {cfg['server_url']}")
+
+    # Clean up stale pending audio from previous sessions
+    _cleanup_stale_pending_audio()
 
     # Check server and fetch presets
     _check_server_connection()

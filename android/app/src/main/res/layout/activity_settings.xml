@@ -97,6 +97,15 @@
             android:layout_height="wrap_content"
             android:text="@string/enable_service"
             style="@style/Widget.Material3.Button.OutlinedButton"
+            android:layout_marginBottom="12dp" />
+
+        <!-- Open Web-based extended settings -->
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/openWebSettingsBtn"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/open_web_settings"
+            style="@style/Widget.Material3.Button.OutlinedButton"
             android:layout_marginBottom="24dp" />
 
         <!-- Status -->

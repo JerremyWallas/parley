@@ -170,3 +170,45 @@ def transcribe(server_url: str, audio_bytes: bytes, mode: str = "raw") -> dict:
         )
         response.raise_for_status()
         return response.json()
+
+
+def transcribe_with_retry(server_url: str, audio_bytes: bytes, mode: str = "raw",
+                          max_retries: int = 3, on_retry=None) -> dict:
+    """REST transcription with exponential backoff retry on network errors.
+
+    Args:
+        on_retry: Optional callback fn(attempt, max_retries) called before each retry.
+    Returns:
+        Server response dict on success.
+    Raises:
+        Last exception if all retries exhausted, or immediately on 4xx errors.
+    """
+    import time
+
+    backoff = [2, 4, 8]
+    last_error = None
+
+    for attempt in range(1, max_retries + 2):  # 1 initial + max_retries
+        try:
+            return transcribe(server_url, audio_bytes, mode)
+        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout,
+                httpx.WriteTimeout, httpx.PoolTimeout) as e:
+            last_error = e
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code < 500:
+                raise  # 4xx = client error, don't retry
+            last_error = e
+        except Exception as e:
+            last_error = e
+
+        if attempt > max_retries:
+            break
+
+        delay = backoff[attempt - 1] if attempt - 1 < len(backoff) else backoff[-1]
+        logger.warning(f"Transcription failed (attempt {attempt}/{max_retries + 1}), "
+                       f"retrying in {delay}s: {last_error}")
+        if on_retry:
+            on_retry(attempt, max_retries)
+        time.sleep(delay)
+
+    raise last_error

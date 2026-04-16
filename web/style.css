@@ -567,6 +567,22 @@ section h3 {
   border-color: var(--accent);
 }
 
+.styled-select {
+  width: 100%;
+  padding: 8px 12px;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.styled-select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
 #glossaryList {
   display: flex;
   flex-wrap: wrap;
@@ -812,6 +828,14 @@ section h3 {
 
 .status-value {
   color: var(--text);
+}
+
+/* Utility */
+.hidden { display: none !important; }
+
+/* Retry button */
+#retryBtn {
+  margin-top: 4px;
 }
 
 /* Processing state */

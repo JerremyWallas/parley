@@ -9,6 +9,7 @@ let animationFrame = null;
 let lastRawText = "";
 let ws = null;
 let _localAudioChunks = []; // Keep local copy for REST fallback
+let _pendingAudioBlob = null; // Kept alive for retry after failures
 
 // --- DOM ---
 const recordBtn = document.getElementById("recordBtn");
@@ -26,6 +27,7 @@ const settingsModal = document.getElementById("settingsModal");
 const closeSettings = document.getElementById("closeSettings");
 const historyList = document.getElementById("historyList");
 const clearHistory = document.getElementById("clearHistory");
+const retryBtn = document.getElementById("retryBtn");
 const canvas = document.getElementById("waveform");
 const canvasCtx = canvas.getContext("2d");
 
@@ -166,35 +168,44 @@ function stopRecording() {
   recordBtn.classList.remove("recording");
   recordBtn.classList.add("processing");
   recordBtn.querySelector(".label").textContent = "Verarbeite...";
+  retryBtn.classList.add("hidden");
 
   if (mediaRecorder && mediaRecorder.state === "recording") {
     mediaRecorder.stop();
   }
 
+  // Consolidate audio for retry BEFORE clearing chunks
+  _pendingAudioBlob = new Blob(_localAudioChunks, { type: getOpusMimeType() });
+
   if (ws && ws.readyState === WebSocket.OPEN) {
     // WebSocket connected — send stop signal, results come via WS messages
     ws.send(JSON.stringify({ type: "stop", mode: currentMode, preset: currentMode }));
-    // Safety timeout: if no response within 30s, reset UI
+    // Safety timeout: if no response within 30s, auto-retry via REST
     _streamTimeout = setTimeout(() => {
       if (recordBtn.classList.contains("processing")) {
-        statusEl.textContent = "Zeitüberschreitung — keine Antwort vom Server";
         streamingSegments = [];
         streamingLLMText = "";
-        _localAudioChunks = [];
-        recordBtn.classList.remove("processing");
-        recordBtn.querySelector(".label").textContent = "Halten zum Sprechen";
         if (ws) { ws.close(); ws = null; }
+        // Auto-retry via REST instead of giving up
+        if (_pendingAudioBlob && _pendingAudioBlob.size > 0) {
+          statusEl.textContent = "Zeitüberschreitung — versuche erneut...";
+          sendAudioRestWithRetry(_pendingAudioBlob);
+        } else {
+          statusEl.textContent = "Zeitüberschreitung — keine Antwort vom Server";
+          recordBtn.classList.remove("processing");
+          recordBtn.querySelector(".label").textContent = "Halten zum Sprechen";
+        }
       }
       _streamTimeout = null;
     }, 30000);
   } else {
-    // No WebSocket — send all audio via REST (works on all browsers)
-    const blob = new Blob(_localAudioChunks, { type: getOpusMimeType() });
+    // No WebSocket — send all audio via REST with retry
     _localAudioChunks = [];
-    if (blob.size > 0) {
-      sendAudioRest(blob);
+    if (_pendingAudioBlob.size > 0) {
+      sendAudioRestWithRetry(_pendingAudioBlob);
     } else {
       statusEl.textContent = "Keine Audio-Daten";
+      _pendingAudioBlob = null;
       recordBtn.classList.remove("processing");
       recordBtn.querySelector(".label").textContent = "Halten zum Sprechen";
     }
@@ -203,6 +214,8 @@ function stopRecording() {
 
 function showFinalResult(rawText, processedText, language, durationMs) {
   lastRawText = rawText;
+  _pendingAudioBlob = null; // Success — clear pending audio
+  retryBtn.classList.add("hidden");
   resultText.value = processedText || rawText;
   resultMeta.textContent = `${(language || "").toUpperCase()} · ${durationMs || 0}ms · ${currentMode}`;
   correctionStatus.textContent = "";
@@ -235,10 +248,49 @@ async function sendAudioRest(blob) {
     showFinalResult(result.raw_text, result.processed_text || result.raw_text, result.language, result.duration_ms);
   } catch (err) {
     statusEl.textContent = "Fehler: " + err.message;
+    if (_pendingAudioBlob) retryBtn.classList.remove("hidden");
   } finally {
     recordBtn.classList.remove("processing");
     recordBtn.querySelector(".label").textContent = "Halten zum Sprechen";
   }
+}
+
+async function sendAudioRestWithRetry(blob, maxRetries = 3) {
+  const backoff = [2000, 4000, 8000];
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const formData = new FormData();
+      formData.append("audio", blob, "recording.webm");
+      formData.append("mode", currentMode);
+      const result = await apiPost("/api/transcribe", { body: formData });
+      showFinalResult(result.raw_text, result.processed_text || result.raw_text, result.language, result.duration_ms);
+      recordBtn.classList.remove("processing");
+      recordBtn.querySelector(".label").textContent = "Halten zum Sprechen";
+      return; // Success
+    } catch (err) {
+      if (attempt < maxRetries) {
+        const delay = backoff[attempt] || backoff[backoff.length - 1];
+        statusEl.textContent = `Erneuter Versuch (${attempt + 2}/${maxRetries + 1})...`;
+        await new Promise(r => setTimeout(r, delay));
+      } else {
+        // All retries exhausted
+        statusEl.textContent = "Fehler: " + err.message;
+        if (_pendingAudioBlob) retryBtn.classList.remove("hidden");
+        recordBtn.classList.remove("processing");
+        recordBtn.querySelector(".label").textContent = "Halten zum Sprechen";
+      }
+    }
+  }
+}
+
+function retryTranscription() {
+  if (!_pendingAudioBlob || _pendingAudioBlob.size === 0) return;
+  retryBtn.classList.add("hidden");
+  recordBtn.classList.add("processing");
+  recordBtn.querySelector(".label").textContent = "Verarbeite...";
+  statusEl.textContent = "Erneuter Versuch...";
+  sendAudioRestWithRetry(_pendingAudioBlob);
 }
 
 // --- Handle streaming messages from WebSocket ---
@@ -315,14 +367,19 @@ function handleStreamMessage(data) {
       break;
 
     case "error":
-      statusEl.textContent = "Fehler: " + data.message;
       streamingSegments = [];
       streamingLLMText = "";
-      _localAudioChunks = [];
-      recordBtn.classList.remove("processing");
-      recordBtn.querySelector(".label").textContent = "Halten zum Sprechen";
       if (_streamTimeout) { clearTimeout(_streamTimeout); _streamTimeout = null; }
       if (ws) { ws.close(); ws = null; }
+      // Auto-retry via REST if we have pending audio
+      if (_pendingAudioBlob && _pendingAudioBlob.size > 0) {
+        statusEl.textContent = "Fehler — versuche erneut...";
+        sendAudioRestWithRetry(_pendingAudioBlob);
+      } else {
+        statusEl.textContent = "Fehler: " + data.message;
+        recordBtn.classList.remove("processing");
+        recordBtn.querySelector(".label").textContent = "Halten zum Sprechen";
+      }
       break;
   }
 }
@@ -439,6 +496,8 @@ recordBtn.addEventListener("touchcancel", () => {
 });
 
 recordBtn.addEventListener("contextmenu", (e) => e.preventDefault());
+
+retryBtn.addEventListener("click", () => retryTranscription());
 
 // --- Waveform visualizer ---
 function drawWaveform() {

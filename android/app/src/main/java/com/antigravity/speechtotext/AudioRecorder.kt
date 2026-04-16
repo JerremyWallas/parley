@@ -19,8 +19,11 @@ class AudioRecorder(
 
     fun start() {
         val bufferSize = AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat)
+        if (bufferSize <= 0) {
+            throw IllegalStateException("AudioRecord.getMinBufferSize failed: $bufferSize")
+        }
 
-        audioRecord = AudioRecord(
+        val record = AudioRecord(
             MediaRecorder.AudioSource.MIC,
             sampleRate,
             channelConfig,
@@ -28,14 +31,26 @@ class AudioRecorder(
             bufferSize * 2,
         )
 
+        if (record.state != AudioRecord.STATE_INITIALIZED) {
+            record.release()
+            throw IllegalStateException("AudioRecord not initialized (permission missing or mic busy)")
+        }
+
         audioData.reset()
+        record.startRecording()
+
+        if (record.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
+            record.release()
+            throw IllegalStateException("AudioRecord failed to start recording")
+        }
+
+        audioRecord = record
         isRecording = true
-        audioRecord?.startRecording()
 
         recordingThread = Thread {
             val buffer = ByteArray(bufferSize)
             while (isRecording) {
-                val read = audioRecord?.read(buffer, 0, buffer.size) ?: -1
+                val read = record.read(buffer, 0, buffer.size)
                 if (read > 0) {
                     synchronized(audioData) {
                         audioData.write(buffer, 0, read)
@@ -46,9 +61,16 @@ class AudioRecorder(
     }
 
     fun stop(): ByteArray {
+        if (!isRecording && audioRecord == null) {
+            return createWav(ByteArray(0))
+        }
         isRecording = false
         recordingThread?.join(1000)
-        audioRecord?.stop()
+        try {
+            audioRecord?.stop()
+        } catch (_: IllegalStateException) {
+            // stop() on an already-stopped recorder throws; swallow.
+        }
         audioRecord?.release()
         audioRecord = null
 

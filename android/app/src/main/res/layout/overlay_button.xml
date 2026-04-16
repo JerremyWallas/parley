@@ -7,9 +7,9 @@
         android:id="@+id/overlayBtn"
         android:layout_width="56dp"
         android:layout_height="56dp"
-        android:src="@drawable/ic_mic"
+        android:src="@drawable/ic_bubble_white"
         android:background="@drawable/overlay_bg"
-        android:padding="14dp"
+        android:padding="12dp"
         android:elevation="8dp"
         android:contentDescription="Parley" />
 </FrameLayout>

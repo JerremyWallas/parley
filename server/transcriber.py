@@ -65,16 +65,14 @@ def set_model(model_name: str) -> None:
 
 
 def download_model(model_name: str) -> None:
-    """Download a Whisper model by loading it, then unload to free VRAM."""
-    compute_type = _detect_compute_type()
+    """Download a Whisper model without using GPU VRAM."""
     logger.info(f"Downloading Whisper model '{model_name}'...")
     m = WhisperModel(
         model_name,
-        device=WHISPER_DEVICE,
-        compute_type=compute_type,
+        device="cpu",
+        compute_type="int8",
         download_root=str(MODEL_DIR),
     )
-    # Unload immediately — we just wanted the download
     del m
     logger.info(f"Whisper model '{model_name}' downloaded and cached.")
 
@@ -120,15 +118,24 @@ def get_model() -> WhisperModel:
     return _model
 
 
+def _get_language() -> str | None:
+    """Get the configured whisper language from preferences (None = auto-detect)."""
+    import personalization
+    prefs = personalization.get_preferences()
+    return prefs.get("whisper_language", None)
+
+
 def transcribe(audio_bytes: bytes, initial_prompt: str | None = None) -> dict:
     """Transcribe audio bytes and return raw text, language, and duration."""
     model = get_model()
+    language = _get_language()
 
     start = time.time()
     segments, info = model.transcribe(
         io.BytesIO(audio_bytes),
         beam_size=5,
         initial_prompt=initial_prompt,
+        language=language,
         vad_filter=True,
         vad_parameters=dict(min_silence_duration_ms=500),
     )
@@ -151,12 +158,14 @@ def transcribe(audio_bytes: bytes, initial_prompt: str | None = None) -> dict:
 def transcribe_streaming(audio_bytes: bytes, initial_prompt: str | None = None) -> Generator[dict, None, None]:
     """Transcribe audio and yield each segment as it's ready."""
     model = get_model()
+    language = _get_language()
 
     start = time.time()
     segments, info = model.transcribe(
         io.BytesIO(audio_bytes),
         beam_size=5,
         initial_prompt=initial_prompt,
+        language=language,
         vad_filter=True,
         vad_parameters=dict(min_silence_duration_ms=500),
     )

@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Center the 64x64 design at 0.75 scale within the 108x108 adaptive-icon viewport.
+         translate (30, 30) + scale 0.75 keeps content within the 66dp safe zone. -->
+    <group
+        android:translateX="30"
+        android:translateY="30"
+        android:scaleX="0.75"
+        android:scaleY="0.75">
+
+        <!-- Speech bubble body + tail (blue brand color) -->
+        <path
+            android:fillColor="#3B82F6"
+            android:pathData="M14,6 L38,6 Q48,6 48,16 L48,32 Q48,42 38,42 L24,42 L6,54 L10,42 L14,42 Q4,42 4,32 L4,16 Q4,6 14,6 Z" />
+
+        <!-- Three conversation dots (white) -->
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="M19,24 a3,3 0 1,1 -6,0 a3,3 0 1,1 6,0 Z" />
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="M29,24 a3,3 0 1,1 -6,0 a3,3 0 1,1 6,0 Z" />
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="M39,24 a3,3 0 1,1 -6,0 a3,3 0 1,1 6,0 Z" />
+
+        <!-- Sound waves (white, fading) -->
+        <path
+            android:strokeColor="#FFFFFF"
+            android:strokeWidth="2"
+            android:strokeAlpha="1.0"
+            android:pathData="M59.07,16.93 A10,10 0 0 1 59.07,31.07" />
+        <path
+            android:strokeColor="#FFFFFF"
+            android:strokeWidth="2"
+            android:strokeAlpha="0.76"
+            android:pathData="M64.73,11.27 A18,18 0 0 1 64.73,36.73" />
+        <path
+            android:strokeColor="#FFFFFF"
+            android:strokeWidth="2"
+            android:strokeAlpha="0.53"
+            android:pathData="M70.39,5.61 A26,26 0 0 1 70.39,42.39" />
+    </group>
+</vector>

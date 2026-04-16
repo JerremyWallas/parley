@@ -12,7 +12,7 @@ class RecordingOverlay:
         self._canvas = None
         self._thread = None
         self._running = False
-        self._state = "hidden"  # hidden, recording, processing, listening, notification
+        self._state = "hidden"  # hidden, recording, processing, listening, retrying, notification
         self._animation_step = 0
         self._notification_text = ""
         self._notification_timer = None
@@ -126,6 +126,7 @@ class RecordingOverlay:
             "recording": ("#ef4444", "#ff6b6b"),
             "processing": ("#f59e0b", "#fbbf24"),
             "listening": ("#22c55e", "#4ade80"),
+            "retrying": ("#f97316", "#fb923c"),
         }
         color, light_color = colors.get(self._state, ("#3b82f6", "#60a5fa"))
 
@@ -168,6 +169,22 @@ class RecordingOverlay:
                     cx + dx - 3, cy + dy - 3, cx + dx + 3, cy + dy + 3,
                     fill="white", outline="",
                 )
+        elif self._state == "retrying":
+            # Rotating circular arrow
+            angle_deg = (self._animation_step * 6) % 360
+            self._canvas.create_arc(
+                cx - 20, cy - 20, cx + 20, cy + 20,
+                start=angle_deg, extent=270,
+                outline="white", width=3, style="arc",
+            )
+            # Arrowhead at the end of the arc
+            tip_angle = math.radians(angle_deg)
+            tx = cx + math.cos(tip_angle) * 20
+            ty = cy - math.sin(tip_angle) * 20
+            self._canvas.create_oval(
+                tx - 4, ty - 4, tx + 4, ty + 4,
+                fill="white", outline="",
+            )
 
         self._root.after(50, self._animate)
 

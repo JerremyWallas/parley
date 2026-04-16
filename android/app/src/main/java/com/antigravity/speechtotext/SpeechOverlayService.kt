@@ -1,10 +1,16 @@
 package com.antigravity.speechtotext
 
 import android.accessibilityservice.AccessibilityService
+import android.content.ComponentName
 import android.content.Context
+import android.content.Intent
+import android.content.ServiceConnection
 import android.graphics.PixelFormat
 import android.graphics.Rect
 import android.os.Bundle
+import android.os.Handler
+import android.os.IBinder
+import android.os.Looper
 import android.util.DisplayMetrics
 import android.util.Log
 import android.view.Gravity
@@ -26,27 +32,54 @@ class SpeechOverlayService : AccessibilityService() {
         private const val PREF_BUTTON_X = "overlay_btn_x"
         private const val PREF_BUTTON_Y = "overlay_btn_y"
         private const val PREF_HAS_CUSTOM_POS = "overlay_has_custom_pos"
+        private const val LONG_PRESS_MS = 300L
+        private const val TOUCH_SLOP_SQ_PX = 100 // ~10px²
     }
+
+    private enum class TouchState { IDLE, PENDING, DRAGGING, RECORDING_PTT, RECORDING_HANDS_FREE }
 
     private lateinit var windowManager: WindowManager
     private lateinit var overlayView: View
     private lateinit var overlayBtn: ImageView
     private lateinit var layoutParams: WindowManager.LayoutParams
-    private var audioRecorder: AudioRecorder? = null
+    private var recordingService: RecordingService? = null
     private var isRecording = false
     private var isOverlayVisible = false
     private var isKeyboardVisible = false
 
-    // Touch tracking
+    private val recordingConnection = object : ServiceConnection {
+        override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
+            recordingService = (binder as? RecordingService.LocalBinder)?.getService()
+            Log.i(TAG, "RecordingService bound")
+        }
+        override fun onServiceDisconnected(name: ComponentName?) {
+            recordingService = null
+            Log.w(TAG, "RecordingService disconnected")
+        }
+    }
+
+    // Touch state
+    private var touchState = TouchState.IDLE
     private var initialX = 0
     private var initialY = 0
     private var initialTouchX = 0f
     private var initialTouchY = 0f
-    private var hasMoved = false
+    private val handler = Handler(Looper.getMainLooper())
+    private val longPressRunnable = Runnable {
+        if (touchState == TouchState.PENDING) {
+            touchState = TouchState.RECORDING_PTT
+            startRecording()
+        }
+    }
 
     override fun onServiceConnected() {
         super.onServiceConnected()
         Log.i(TAG, "Service connected")
+        bindService(
+            Intent(this, RecordingService::class.java),
+            recordingConnection,
+            Context.BIND_AUTO_CREATE,
+        )
         initOverlay()
     }
 
@@ -102,8 +135,10 @@ class SpeechOverlayService : AccessibilityService() {
 
     private fun hideOverlay() {
         if (!isOverlayVisible) return
-        // Cancel any ongoing recording
+        // Cancel any ongoing recording or pending long-press
+        handler.removeCallbacks(longPressRunnable)
         if (isRecording) cancelRecording()
+        touchState = TouchState.IDLE
         try {
             windowManager.removeView(overlayView)
             isOverlayVisible = false
@@ -152,7 +187,7 @@ class SpeechOverlayService : AccessibilityService() {
         // Check all windows for an input method window
         try {
             for (window in windows) {
-                if (window.type == android.accessibilityservice.AccessibilityWindowInfo.TYPE_INPUT_METHOD) {
+                if (window.type == android.view.accessibility.AccessibilityWindowInfo.TYPE_INPUT_METHOD) {
                     return true
                 }
             }
@@ -166,67 +201,116 @@ class SpeechOverlayService : AccessibilityService() {
 
     private fun handleTouch(event: MotionEvent) {
         when (event.action) {
-            MotionEvent.ACTION_DOWN -> {
+            MotionEvent.ACTION_DOWN -> onTouchDown(event)
+            MotionEvent.ACTION_MOVE -> onTouchMove(event)
+            MotionEvent.ACTION_UP -> onTouchUp()
+            MotionEvent.ACTION_CANCEL -> onTouchCancel()
+        }
+    }
+
+    private fun onTouchDown(event: MotionEvent) {
+        when (touchState) {
+            TouchState.RECORDING_HANDS_FREE -> {
+                // Second tap ends hands-free recording
+                touchState = TouchState.IDLE
+                stopRecordingAndTranscribe()
+            }
+            TouchState.IDLE -> {
                 initialX = layoutParams.x
                 initialY = layoutParams.y
                 initialTouchX = event.rawX
                 initialTouchY = event.rawY
-                hasMoved = false
+                touchState = TouchState.PENDING
+                handler.postDelayed(longPressRunnable, LONG_PRESS_MS)
+            }
+            else -> {
+                // Stray DOWN during PENDING/DRAGGING/RECORDING_PTT — ignore
+            }
+        }
+    }
+
+    private fun onTouchMove(event: MotionEvent) {
+        val dx = event.rawX - initialTouchX
+        val dy = event.rawY - initialTouchY
+        val movedBeyondSlop = dx * dx + dy * dy > TOUCH_SLOP_SQ_PX
+
+        when (touchState) {
+            TouchState.PENDING -> {
+                if (movedBeyondSlop) {
+                    handler.removeCallbacks(longPressRunnable)
+                    touchState = TouchState.DRAGGING
+                    updateOverlayPosition(dx, dy)
+                }
+            }
+            TouchState.DRAGGING -> updateOverlayPosition(dx, dy)
+            else -> {
+                // Ignore movement during recording — button is pinned
+            }
+        }
+    }
+
+    private fun onTouchUp() {
+        when (touchState) {
+            TouchState.PENDING -> {
+                // Quick tap → start hands-free recording
+                handler.removeCallbacks(longPressRunnable)
+                touchState = TouchState.RECORDING_HANDS_FREE
                 startRecording()
             }
-
-            MotionEvent.ACTION_MOVE -> {
-                val dx = event.rawX - initialTouchX
-                val dy = event.rawY - initialTouchY
-                if (dx * dx + dy * dy > 100) { // Moved more than 10px
-                    hasMoved = true
-                    layoutParams.x = initialX + dx.toInt()
-                    layoutParams.y = initialY + dy.toInt()
-                    if (isOverlayVisible) {
-                        windowManager.updateViewLayout(overlayView, layoutParams)
-                    }
-
-                    // Cancel recording if dragging
-                    if (isRecording) {
-                        cancelRecording()
-                    }
-                }
+            TouchState.DRAGGING -> {
+                touchState = TouchState.IDLE
+                saveButtonPosition()
             }
-
-            MotionEvent.ACTION_UP -> {
-                if (hasMoved) {
-                    // Save new position after drag
-                    saveButtonPosition()
-                } else if (isRecording) {
-                    stopRecordingAndTranscribe()
-                }
+            TouchState.RECORDING_PTT -> {
+                touchState = TouchState.IDLE
+                stopRecordingAndTranscribe()
             }
-
-            MotionEvent.ACTION_CANCEL -> {
-                cancelRecording()
-                if (hasMoved) saveButtonPosition()
+            TouchState.RECORDING_HANDS_FREE, TouchState.IDLE -> {
+                // Hands-free: stays recording after the start-tap lifts.
+                // Idle: nothing to do.
             }
+        }
+    }
+
+    private fun onTouchCancel() {
+        handler.removeCallbacks(longPressRunnable)
+        when (touchState) {
+            TouchState.DRAGGING -> saveButtonPosition()
+            TouchState.RECORDING_PTT, TouchState.RECORDING_HANDS_FREE -> cancelRecording()
+            else -> { /* no-op */ }
+        }
+        touchState = TouchState.IDLE
+    }
+
+    private fun updateOverlayPosition(dx: Float, dy: Float) {
+        layoutParams.x = initialX + dx.toInt()
+        layoutParams.y = initialY + dy.toInt()
+        if (isOverlayVisible) {
+            windowManager.updateViewLayout(overlayView, layoutParams)
         }
     }
 
     // --- Recording ---
 
     private fun startRecording() {
+        // Promote RecordingService to foreground (needed for mic capture on API 34+).
+        // The service receives ACTION_START in onStartCommand and starts the AudioRecorder.
         try {
-            audioRecorder = AudioRecorder()
-            audioRecorder?.start()
+            startForegroundService(
+                Intent(this, RecordingService::class.java).setAction(RecordingService.ACTION_START),
+            )
             isRecording = true
             overlayBtn.setBackgroundResource(R.drawable.overlay_bg_recording)
             Log.i(TAG, "Recording started")
-        } catch (e: SecurityException) {
-            Log.e(TAG, "Microphone permission denied", e)
-            Toast.makeText(this, "Mikrofon-Berechtigung fehlt", Toast.LENGTH_SHORT).show()
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to start recording", e)
+            Toast.makeText(this, "Aufnahme konnte nicht gestartet werden", Toast.LENGTH_SHORT).show()
         }
     }
 
     private fun cancelRecording() {
         if (isRecording) {
-            audioRecorder?.stop()
+            recordingService?.cancel()
             isRecording = false
             overlayBtn.setBackgroundResource(R.drawable.overlay_bg)
             Log.i(TAG, "Recording cancelled")
@@ -237,8 +321,12 @@ class SpeechOverlayService : AccessibilityService() {
         if (!isRecording) return
         isRecording = false
 
-        val audioData = audioRecorder?.stop() ?: return
+        val audioData = recordingService?.stopAndGetAudio()
         overlayBtn.setBackgroundResource(R.drawable.overlay_bg)
+        if (audioData == null) {
+            Log.w(TAG, "No audio data — recording service unavailable")
+            return
+        }
 
         if (audioData.size < 100) {
             Log.w(TAG, "Audio too short, ignoring")
@@ -316,7 +404,13 @@ class SpeechOverlayService : AccessibilityService() {
 
     override fun onDestroy() {
         super.onDestroy()
+        handler.removeCallbacks(longPressRunnable)
         hideOverlay()
         cancelRecording()
+        try {
+            unbindService(recordingConnection)
+        } catch (_: IllegalArgumentException) {
+            // Not bound — ignore.
+        }
     }
 }

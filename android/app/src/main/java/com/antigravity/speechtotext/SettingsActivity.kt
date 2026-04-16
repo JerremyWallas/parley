@@ -29,6 +29,7 @@ class SettingsActivity : AppCompatActivity() {
         val modeGroup = findViewById<RadioGroup>(R.id.modeGroup)
         val saveBtn = findViewById<MaterialButton>(R.id.saveBtn)
         val enableServiceBtn = findViewById<MaterialButton>(R.id.enableServiceBtn)
+        val openWebSettingsBtn = findViewById<MaterialButton>(R.id.openWebSettingsBtn)
 
         // Load saved preferences
         val prefs = getSharedPreferences("stt_prefs", MODE_PRIVATE)
@@ -61,6 +62,16 @@ class SettingsActivity : AppCompatActivity() {
         enableServiceBtn.setOnClickListener {
             val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
             startActivity(intent)
+        }
+
+        // Open WebView with the full web UI for advanced settings
+        openWebSettingsBtn.setOnClickListener {
+            val url = serverUrlInput.text.toString().trim()
+            if (url.isBlank()) {
+                Toast.makeText(this, "Bitte erst Server-URL speichern", Toast.LENGTH_SHORT).show()
+            } else {
+                startActivity(Intent(this, WebSettingsActivity::class.java))
+            }
         }
     }
 
