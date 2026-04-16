@@ -1,17 +1,7 @@
 """Settings window for Parley Desktop Client using tkinter."""
-import ctypes
 import tkinter as tk
 from pynput import keyboard as kb
 from PIL import ImageTk
-
-# Enable DPI awareness for sharp rendering on high-DPI displays
-try:
-    ctypes.windll.shcore.SetProcessDpiAwareness(2)
-except Exception:
-    try:
-        ctypes.windll.user32.SetProcessDPIAware()
-    except Exception:
-        pass
 
 import config
 from icon import create_parley_icon
@@ -119,7 +109,11 @@ class SettingsWindow:
         return btn
 
     def show(self):
-        self.win = tk.Toplevel() if tk._default_root else tk.Tk()
+        # Ensure a Tk root exists before creating Toplevel
+        if not tk._default_root:
+            _hidden = tk.Tk()
+            _hidden.withdraw()
+        self.win = tk.Toplevel()
         self.win.title("Parley")
         self.win.resizable(False, False)
         self.win.configure(bg=BG)

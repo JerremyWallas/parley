@@ -1,17 +1,7 @@
 """Transparent overlay window showing recording/processing state — centered above taskbar."""
-import ctypes
 import tkinter as tk
 import threading
 import math
-
-# Enable DPI awareness for sharp rendering on high-DPI displays
-try:
-    ctypes.windll.shcore.SetProcessDpiAwareness(2)  # Per-monitor DPI aware
-except Exception:
-    try:
-        ctypes.windll.user32.SetProcessDPIAware()  # Fallback
-    except Exception:
-        pass
 
 
 class RecordingOverlay:
@@ -68,6 +58,9 @@ class RecordingOverlay:
 
     def _run(self):
         self._running = True
+        # Overlay runs in its own thread and needs its own Tk instance.
+        # This is the ONLY place where tk.Tk() is allowed besides main.py.
+        # We never destroy it — only withdraw/deiconify.
         self._root = tk.Tk()
         self._root.title("")
         self._root.overrideredirect(True)

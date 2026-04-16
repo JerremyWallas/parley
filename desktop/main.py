@@ -1,6 +1,8 @@
+import ctypes
 import sys
 import threading
 import logging
+import tkinter as tk
 import urllib3
 import httpx
 from pynput import keyboard
@@ -14,6 +16,28 @@ import settings_ui
 from overlay import RecordingOverlay
 from icon import create_tray_icon
 from tray_window import TrayWindow
+
+# Enable DPI awareness ONCE before any tkinter window is created
+try:
+    ctypes.windll.shcore.SetProcessDpiAwareness(2)
+except Exception:
+    try:
+        ctypes.windll.user32.SetProcessDPIAware()
+    except Exception:
+        pass
+
+# Persistent hidden Tk root — created lazily, lives for the entire app lifetime.
+# All windows use _get_tk_root() which returns Toplevel if root exists, or creates root.
+_tk_root = None
+
+
+def _get_tk_root():
+    """Get or create the persistent Tk root. Returns a Toplevel window."""
+    global _tk_root
+    if _tk_root is None or not _tk_root.winfo_exists():
+        _tk_root = tk.Tk()
+        _tk_root.withdraw()
+    return _tk_root
 
 # Suppress SSL warnings for self-signed certs
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -310,13 +334,11 @@ def _show_error_popup(message: str):
         import threading
 
         def _show():
-            import tkinter as tk
             from tkinter import messagebox
-            # Use Toplevel if a Tk root already exists, otherwise create one
-            if tk._default_root:
-                root = tk.Toplevel()
-            else:
-                root = tk.Tk()
+            if not tk._default_root:
+                _hidden = tk.Tk()
+                _hidden.withdraw()
+            root = tk.Toplevel()
             root.withdraw()
             root.attributes("-topmost", True)
             if "connect" in message.lower() or "refused" in message.lower() or "unreachable" in message.lower() or "timed out" in message.lower():

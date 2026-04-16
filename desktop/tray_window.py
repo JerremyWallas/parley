@@ -1,17 +1,7 @@
 """Custom dark tray window replacing the native Windows context menu."""
-import ctypes
 import tkinter as tk
 from PIL import ImageTk
 from icon import create_parley_icon
-
-# DPI awareness
-try:
-    ctypes.windll.shcore.SetProcessDpiAwareness(2)
-except Exception:
-    try:
-        ctypes.windll.user32.SetProcessDPIAware()
-    except Exception:
-        pass
 
 # Design constants
 BG = "#0f172a"
@@ -55,7 +45,11 @@ class TrayWindow:
         state = state or {}
         self._visible = True
 
-        root = tk.Toplevel() if tk._default_root else tk.Tk()
+        # Ensure a Tk root exists before creating Toplevel
+        if not tk._default_root:
+            _hidden = tk.Tk()
+            _hidden.withdraw()
+        root = tk.Toplevel()
         self._win = root
         root.overrideredirect(True)
         root.attributes("-topmost", True)
