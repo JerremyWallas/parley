@@ -34,7 +34,42 @@ _active_mode = None  # None, "hold", or "toggle"
 _streaming_session = None
 _cached_presets = []  # list of preset dicts from server
 _active_preset_id = "raw"  # currently active preset id
+_server_connected = False
 preset_hotkey_parts = {}  # {"<ctrl>+1": (["<ctrl>", "1"], "raw"), ...}
+
+
+def _check_server_connection():
+    """Check if server is reachable and update tray icon."""
+    global _server_connected
+    try:
+        url = f"{cfg['server_url'].rstrip('/')}/api/health"
+        resp = httpx.get(url, verify=False, timeout=3.0)
+        resp.raise_for_status()
+        was_connected = _server_connected
+        _server_connected = True
+        if not was_connected:
+            logger.info("Server connected")
+            _refresh_tray_icon()
+    except Exception:
+        was_connected = _server_connected
+        _server_connected = False
+        if was_connected:
+            logger.warning("Server disconnected")
+            _refresh_tray_icon()
+
+
+def _refresh_tray_icon():
+    """Update tray icon to reflect current connection status."""
+    if tray_icon:
+        tray_icon.icon = create_tray_icon("#3b82f6", connected=_server_connected)
+
+
+def _server_health_loop():
+    """Periodically check server connection in background."""
+    import time
+    while True:
+        _check_server_connection()
+        time.sleep(30)
 
 
 def _fetch_presets() -> list[dict]:
@@ -446,16 +481,16 @@ def update_icon(recording: bool = False, processing: bool = False, listening: bo
     if tray_icon is None:
         return
     if recording:
-        tray_icon.icon = create_tray_icon("#ef4444")  # red
+        tray_icon.icon = create_tray_icon("#ef4444", connected=_server_connected)
         overlay.show("recording")
     elif processing:
-        tray_icon.icon = create_tray_icon("#f59e0b")  # orange
+        tray_icon.icon = create_tray_icon("#f59e0b", connected=_server_connected)
         overlay.update_state("processing")
     elif listening:
-        tray_icon.icon = create_tray_icon("#22c55e")  # green — waiting for "senden"
+        tray_icon.icon = create_tray_icon("#22c55e", connected=_server_connected)
         overlay.update_state("listening")
     else:
-        tray_icon.icon = create_tray_icon("#3b82f6")  # blue
+        tray_icon.icon = create_tray_icon("#3b82f6", connected=_server_connected)
         overlay.hide()
 
 
@@ -573,9 +608,14 @@ def main():
     logger.info("Parley Desktop Client")
     logger.info(f"Server: {cfg['server_url']}")
 
-    # Fetch presets from server
+    # Check server and fetch presets
+    _check_server_connection()
     _fetch_presets()
     logger.info(f"Active preset: {_active_preset_id}")
+    logger.info(f"Server connected: {_server_connected}")
+
+    # Start background health check
+    threading.Thread(target=_server_health_loop, daemon=True).start()
 
     hold_parts = parse_hotkey(cfg["hotkey_hold"])
     toggle_parts = parse_hotkey(cfg["hotkey_toggle"])
@@ -592,7 +632,7 @@ def main():
     # Create and run tray icon
     tray_icon = pystray.Icon(
         "parley",
-        create_tray_icon(),
+        create_tray_icon(connected=_server_connected),
         "Parley",
         menu=build_menu(),
     )

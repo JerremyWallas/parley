@@ -51,6 +51,17 @@ def create_parley_icon(size: int = 64, color: str = "#3b82f6") -> Image.Image:
     return img
 
 
-def create_tray_icon(color: str = "#3b82f6") -> Image.Image:
-    """Create tray icon at high resolution for sharp display on high-DPI screens."""
-    return create_parley_icon(128, color)
+def create_tray_icon(color: str = "#3b82f6", connected: bool = False) -> Image.Image:
+    """Create tray icon with optional connection status dot."""
+    img = create_parley_icon(128, color)
+    if connected is not None:
+        draw = ImageDraw.Draw(img)
+        # Small status dot in bottom-right corner
+        dot_color = "#22c55e" if connected else "#ef4444"
+        s = 128 / 64
+        r = int(6 * s)
+        cx, cy = int(56 * s), int(56 * s)
+        # White outline for visibility
+        draw.ellipse([cx - r - 2, cy - r - 2, cx + r + 2, cy + r + 2], fill="white")
+        draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=dot_color)
+    return img
