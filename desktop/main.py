@@ -515,6 +515,8 @@ def toggle_auto_paste(icon, item):
 
 def open_settings(icon, item):
     """Open settings window and apply changes."""
+    logger.info("Opening settings window...")
+
     def on_save(new_cfg):
         global cfg, hold_parts, toggle_parts, stop_parts
         cfg = new_cfg
@@ -524,11 +526,16 @@ def open_settings(icon, item):
         _parse_preset_hotkeys()
         _fetch_presets()
         logger.info(f"Settings updated — Hold: {cfg['hotkey_hold']}, Toggle: {cfg['hotkey_toggle']}, Server: {cfg['server_url']}")
-        # Rebuild tray menu to reflect new settings
         if tray_icon:
             tray_icon.menu = build_menu()
 
-    threading.Thread(target=settings_ui.open_settings, args=(cfg, on_save), daemon=True).start()
+    def _open():
+        try:
+            settings_ui.open_settings(cfg, on_save)
+        except Exception as e:
+            logger.error(f"Settings window error: {e}")
+
+    threading.Thread(target=_open, daemon=True).start()
 
 
 def copy_last_result(icon, item):
