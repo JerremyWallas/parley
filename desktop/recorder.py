@@ -1,6 +1,7 @@
 import collections
 import io
 import logging
+import sys
 import threading
 import wave
 import sounddevice as sd
@@ -11,18 +12,20 @@ logger = logging.getLogger(__name__)
 # Find WASAPI input device for shared-mode mic access on Windows.
 # WASAPI shared mode allows Parley to use the mic simultaneously
 # with other apps (Teams, Discord, browsers etc.)
+# On Linux/macOS this is skipped — PulseAudio/PipeWire/CoreAudio share by default.
 _wasapi_input_device = None
 _wasapi_settings = None
-try:
-    for i, api in enumerate(sd.query_hostapis()):
-        if "WASAPI" in api["name"]:
-            _wasapi_input_device = api["default_input_device"]
-            _wasapi_settings = sd.WasapiSettings(exclusive=False)
-            dev_name = sd.query_devices(_wasapi_input_device)["name"]
-            logger.info(f"WASAPI shared mode: device {_wasapi_input_device} ({dev_name})")
-            break
-except Exception as e:
-    logger.warning(f"Could not set up WASAPI shared mode: {e}")
+if sys.platform == "win32":
+    try:
+        for i, api in enumerate(sd.query_hostapis()):
+            if "WASAPI" in api["name"]:
+                _wasapi_input_device = api["default_input_device"]
+                _wasapi_settings = sd.WasapiSettings(exclusive=False)
+                dev_name = sd.query_devices(_wasapi_input_device)["name"]
+                logger.info(f"WASAPI shared mode: device {_wasapi_input_device} ({dev_name})")
+                break
+    except Exception as e:
+        logger.warning(f"Could not set up WASAPI shared mode: {e}")
 
 
 class AudioRecorder:

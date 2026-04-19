@@ -1,4 +1,3 @@
-import ctypes
 import json
 import sys
 import threading
@@ -20,14 +19,16 @@ from overlay import RecordingOverlay
 from icon import create_tray_icon
 from tray_window import TrayWindow
 
-# Enable DPI awareness ONCE before any tkinter window is created
-try:
-    ctypes.windll.shcore.SetProcessDpiAwareness(2)
-except Exception:
+# Enable DPI awareness ONCE before any tkinter window is created (Windows only).
+if sys.platform == "win32":
+    import ctypes
     try:
-        ctypes.windll.user32.SetProcessDPIAware()
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
     except Exception:
-        pass
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
 
 # Persistent hidden Tk root — created lazily, lives for the entire app lifetime.
 # All windows use _get_tk_root() which returns Toplevel if root exists, or creates root.
@@ -867,24 +868,31 @@ def main():
 
 
 def ensure_single_instance():
-    """Ensure only one instance of Parley is running using a lock file."""
-    import msvcrt
+    """Ensure only one instance of Parley is running using a lock file.
+
+    Uses platform-native exclusive file locking: msvcrt on Windows, fcntl on
+    Linux/macOS. The lock is released automatically when the process exits.
+    """
+    import os
     lock_path = config.CONFIG_FILE.parent / "parley.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
 
     try:
-        # Open lock file and try exclusive lock
         lock_file = open(lock_path, "w")
-        msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+        if sys.platform == "win32":
+            import msvcrt
+            msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         lock_file.write(str(os.getpid()))
         lock_file.flush()
         return lock_file  # Keep reference alive so lock persists
-    except (OSError, IOError):
+    except (OSError, IOError, BlockingIOError):
         logger.error("Parley is already running. Exiting.")
         sys.exit(0)
 
 
 if __name__ == "__main__":
-    import os
     _lock = ensure_single_instance()
     main()

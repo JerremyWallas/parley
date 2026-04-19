@@ -101,6 +101,25 @@ pyinstaller build.spec
 # Ergebnis: desktop/dist/Parley.exe
 ```
 
+### Desktop (Linux)
+
+Funktioniert auf Ubuntu 22.04+ (Wayland und X11), Debian und verwandten Distros.
+
+```bash
+cd desktop
+./install_linux.sh   # einmaliges Setup (sudo wird benötigt)
+# Logout + Login durchführen, damit die Gruppen-Mitgliedschaft aktiv wird
+./venv/bin/python main.py
+```
+
+Das Setup-Skript installiert `ydotool` (für Tasten-Synthese auf Wayland), `wl-clipboard`, AppIndicator-Support für die Tray-Icon und fügt deinen Benutzer der `input`-Gruppe hinzu, damit die globalen Hotkeys auch unter Wayland funktionieren.
+
+**Falls die Tray-Icon auf GNOME nicht erscheint:** Die AppIndicator-Extension aktivieren:
+
+```bash
+gnome-extensions enable ubuntu-appindicators@ubuntu.com
+```
+
 Standard-Hotkey: `Ctrl+Shift+Space` (halten zum Sprechen).
 
 Konfiguration liegt in `~/.config/parley/config.json`:
