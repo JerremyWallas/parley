@@ -1,4 +1,5 @@
 import logging
+import os
 import shutil
 import subprocess
 import sys
@@ -9,12 +10,16 @@ from pynput.keyboard import Controller, Key
 
 logger = logging.getLogger(__name__)
 
-# On Wayland (Linux) pynput cannot synthesize key events into other
-# applications, so we shell out to ydotool. ydotool talks to the
-# Linux uinput kernel device via a daemon (ydotoold), which works
-# on both X11 and Wayland.
-_USE_YDOTOOL = sys.platform.startswith("linux") and shutil.which("ydotool") is not None
-_USE_WL_COPY = sys.platform.startswith("linux") and shutil.which("wl-copy") is not None
+# On Wayland, pynput cannot synthesize key events into other applications.
+# wtype is a small Wayland-native helper from the Ubuntu/Debian repos that
+# does this without needing a daemon or root. We detect Wayland via
+# XDG_SESSION_TYPE so X11 users keep using pynput directly.
+_IS_WAYLAND = (
+    sys.platform.startswith("linux")
+    and os.environ.get("XDG_SESSION_TYPE", "").lower() == "wayland"
+)
+_USE_WTYPE = _IS_WAYLAND and shutil.which("wtype") is not None
+_USE_WL_COPY = _IS_WAYLAND and shutil.which("wl-copy") is not None
 
 keyboard = Controller()
 
@@ -32,16 +37,14 @@ def _copy_clipboard(text: str) -> None:
 
 def _press_paste() -> None:
     """Send Ctrl+V to the active window."""
-    if _USE_YDOTOOL:
-        # ydotool uses Linux input event codes: 29=ctrl, 47=v
+    if _USE_WTYPE:
         try:
-            subprocess.run(
-                ["ydotool", "key", "29:1", "47:1", "47:0", "29:0"],
-                check=True, timeout=2,
-            )
+            # -M ctrl: press ctrl, "v" types v, -m ctrl: release ctrl
+            subprocess.run(["wtype", "-M", "ctrl", "v", "-m", "ctrl"],
+                           check=True, timeout=2)
             return
         except Exception as e:
-            logger.warning(f"ydotool paste failed, falling back to pynput: {e}")
+            logger.warning(f"wtype paste failed, falling back to pynput: {e}")
     keyboard.press(Key.ctrl)
     keyboard.press("v")
     keyboard.release("v")
@@ -50,13 +53,12 @@ def _press_paste() -> None:
 
 def _press_enter_native() -> None:
     """Send Enter to the active window."""
-    if _USE_YDOTOOL:
+    if _USE_WTYPE:
         try:
-            # 28 = KEY_ENTER
-            subprocess.run(["ydotool", "key", "28:1", "28:0"], check=True, timeout=2)
+            subprocess.run(["wtype", "-k", "Return"], check=True, timeout=2)
             return
         except Exception as e:
-            logger.warning(f"ydotool enter failed, falling back to pynput: {e}")
+            logger.warning(f"wtype enter failed, falling back to pynput: {e}")
     keyboard.press(Key.enter)
     keyboard.release(Key.enter)
 
