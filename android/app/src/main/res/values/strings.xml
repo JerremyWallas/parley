@@ -11,6 +11,8 @@
     <string name="enable_service">Accessibility Service aktivieren</string>
     <string name="open_web_settings">Erweiterte Einstellungen oeffnen</string>
     <string name="web_settings_title">Erweiterte Einstellungen</string>
+    <string name="settings_title">Einstellungen</string>
+    <string name="auto_send_label">Nachricht automatisch senden (nach Transkription Enter druecken)</string>
     <string name="save">Speichern</string>
     <string name="recording">Aufnahme...</string>
     <string name="processing">Verarbeite...</string>

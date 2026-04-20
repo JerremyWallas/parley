@@ -26,6 +26,12 @@
       <button class="mode-btn" data-mode="rephrase">Reformulieren</button>
     </div>
 
+    <!-- Auto-Send toggle (Android-Overlay: nach Transkription Enter druecken) -->
+    <label id="autoSendRow" class="toggle-row">
+      <input type="checkbox" id="autoSendToggle">
+      <span>Nachricht automatisch senden</span>
+    </label>
+
     <!-- Record button -->
     <div id="recordArea">
       <div id="visualizer">
@@ -97,6 +103,13 @@
           <section>
             <h3>Sprachstatistik</h3>
             <div id="langStats"></div>
+          </section>
+
+          <!-- Android-spezifisch: nur sichtbar wenn App-Bridge vorhanden -->
+          <section id="androidSection" class="hidden">
+            <h3>Android</h3>
+            <p class="hint">Der Overlay-Dienst fuegt transkribierten Text in Textfelder anderer Apps ein. Aktiviere ihn einmalig in den Android-Einstellungen.</p>
+            <button id="openAccessibilityBtn" class="secondary-btn">Accessibility-Service aktivieren</button>
           </section>
         </div>
 

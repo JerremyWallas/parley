@@ -362,6 +362,18 @@ class SpeechOverlayService : AccessibilityService() {
                     }
                     focused.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
                     Log.i(TAG, "Text inserted: ${text.take(80)}...")
+
+                    // Auto-Send: loest die IME-Enter-Aktion im Zielfeld aus (API 30+).
+                    if (prefs.getBoolean("auto_send", false)) {
+                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+                            val sent = focused.performAction(
+                                AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id,
+                            )
+                            Log.i(TAG, "Auto-send IME_ENTER performed=$sent")
+                        } else {
+                            Log.w(TAG, "Auto-send needs Android 11+ (API 30)")
+                        }
+                    }
                 } else {
                     // Fallback: copy to clipboard
                     val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager

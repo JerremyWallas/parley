@@ -1,6 +1,20 @@
 // --- State ---
 let currentMode = localStorage.getItem("stt-mode") || "raw";
 let serverUrl = localStorage.getItem("stt-server") || "";
+let autoSend = localStorage.getItem("stt-autosend") === "1";
+
+// --- Android-Bridge (nur in der Android-WebView vorhanden) ---
+const AndroidBridge = window.AndroidBridge || null;
+function syncToAndroid(key, value) {
+  if (!AndroidBridge) return;
+  try {
+    if (key === "mode") AndroidBridge.setMode(String(value));
+    else if (key === "server") AndroidBridge.setServerUrl(String(value));
+    else if (key === "autoSend") AndroidBridge.setAutoSend(Boolean(value));
+  } catch (e) {
+    console.warn("AndroidBridge call failed:", e);
+  }
+}
 let mediaRecorder = null;
 let isRecording = false;
 let audioContext = null;
@@ -61,6 +75,7 @@ function setMode(mode) {
   document.querySelectorAll(".mode-btn").forEach(btn => {
     btn.classList.toggle("active", btn.dataset.mode === mode);
   });
+  syncToAndroid("mode", mode);
 }
 
 // Fixed mode buttons
@@ -69,6 +84,31 @@ modeButtons.forEach(btn => {
   btn.addEventListener("click", () => setMode(btn.dataset.mode));
 });
 setMode(currentMode);
+
+// --- Auto-Send toggle ---
+const autoSendToggle = document.getElementById("autoSendToggle");
+if (autoSendToggle) {
+  autoSendToggle.checked = autoSend;
+  autoSendToggle.addEventListener("change", () => {
+    autoSend = autoSendToggle.checked;
+    localStorage.setItem("stt-autosend", autoSend ? "1" : "0");
+    syncToAndroid("autoSend", autoSend);
+  });
+  // Initial-Sync (beim ersten Laden den in Android gespeicherten Zustand abgleichen)
+  syncToAndroid("autoSend", autoSend);
+}
+
+// Android-Abschnitt in den Settings einblenden, wenn Bridge vorhanden
+if (AndroidBridge) {
+  const androidSection = document.getElementById("androidSection");
+  if (androidSection) androidSection.classList.remove("hidden");
+  const openAcc = document.getElementById("openAccessibilityBtn");
+  if (openAcc) {
+    openAcc.addEventListener("click", () => {
+      try { AndroidBridge.openAccessibilitySettings(); } catch (e) { console.warn(e); }
+    });
+  }
+}
 
 // --- Tab switching ---
 document.querySelectorAll(".tab-btn").forEach(btn => {
@@ -1258,6 +1298,7 @@ _setupPromptEditor("rephrase", "rephrasePromptText", "rephrasePromptSave", "reph
 document.getElementById("saveServerUrl").addEventListener("click", () => {
   serverUrl = document.getElementById("serverUrl").value.trim();
   localStorage.setItem("stt-server", serverUrl);
+  syncToAndroid("server", serverUrl);
   checkServer();
 });
 
