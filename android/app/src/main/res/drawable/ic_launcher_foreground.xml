@@ -29,21 +29,16 @@
             android:fillColor="#FFFFFF"
             android:pathData="M39,24 a3,3 0 1,1 -6,0 a3,3 0 1,1 6,0 Z" />
 
-        <!-- Sound waves (white, fading) -->
+        <!-- Sound waves (black on white background, fading) -->
         <path
-            android:strokeColor="#FFFFFF"
+            android:strokeColor="#000000"
             android:strokeWidth="2"
             android:strokeAlpha="1.0"
             android:pathData="M59.07,16.93 A10,10 0 0 1 59.07,31.07" />
         <path
-            android:strokeColor="#FFFFFF"
+            android:strokeColor="#000000"
             android:strokeWidth="2"
-            android:strokeAlpha="0.76"
+            android:strokeAlpha="0.65"
             android:pathData="M64.73,11.27 A18,18 0 0 1 64.73,36.73" />
-        <path
-            android:strokeColor="#FFFFFF"
-            android:strokeWidth="2"
-            android:strokeAlpha="0.53"
-            android:pathData="M70.39,5.61 A26,26 0 0 1 70.39,42.39" />
     </group>
 </vector>

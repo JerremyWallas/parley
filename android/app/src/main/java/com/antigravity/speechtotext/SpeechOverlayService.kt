@@ -363,16 +363,8 @@ class SpeechOverlayService : AccessibilityService() {
                     focused.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
                     Log.i(TAG, "Text inserted: ${text.take(80)}...")
 
-                    // Auto-Send: loest die IME-Enter-Aktion im Zielfeld aus (API 30+).
                     if (prefs.getBoolean("auto_send", false)) {
-                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
-                            val sent = focused.performAction(
-                                AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id,
-                            )
-                            Log.i(TAG, "Auto-send IME_ENTER performed=$sent")
-                        } else {
-                            Log.w(TAG, "Auto-send needs Android 11+ (API 30)")
-                        }
+                        scheduleAutoSend(focused)
                     }
                 } else {
                     // Fallback: copy to clipboard
@@ -395,6 +387,67 @@ class SpeechOverlayService : AccessibilityService() {
                 }
             }
         }
+    }
+
+    // --- Auto-Send ---
+    //
+    // WhatsApp/Telegram/Signal haben multi-line Eingabefelder: ACTION_IME_ENTER
+    // fuegt dort nur einen Zeilenumbruch ein statt zu senden. Richtige Loesung:
+    // separaten Send-Button per Accessibility-Traversal finden und klicken.
+    // IME_ENTER bleibt Fallback fuer single-line Felder (Suchleisten etc.).
+    private fun scheduleAutoSend(focused: AccessibilityNodeInfo) {
+        handler.postDelayed({
+            val root = rootInActiveWindow
+            val sendBtn = root?.let { findSendButton(it) }
+            if (sendBtn != null) {
+                val clicked = sendBtn.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                Log.i(
+                    TAG,
+                    "Auto-send via click on '${sendBtn.contentDescription ?: sendBtn.viewIdResourceName}' ok=$clicked",
+                )
+                return@postDelayed
+            }
+            val multiLine = try { focused.isMultiLine } catch (_: Throwable) { false }
+            if (!multiLine && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+                val ok = focused.performAction(
+                    AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id,
+                )
+                Log.i(TAG, "Auto-send via IME_ENTER ok=$ok")
+            } else {
+                Log.w(TAG, "Auto-send: kein Send-Button gefunden und Multi-Line-Feld (kein IME_ENTER)")
+            }
+        }, 150L)
+    }
+
+    private fun findSendButton(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        if (matchesSendButton(node)) return node
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            val hit = findSendButton(child)
+            if (hit != null) return hit
+        }
+        return null
+    }
+
+    private fun matchesSendButton(node: AccessibilityNodeInfo): Boolean {
+        if (!node.isClickable || !node.isEnabled || !node.isVisibleToUser) return false
+        val desc = node.contentDescription?.toString()?.trim()?.lowercase().orEmpty()
+        val text = node.text?.toString()?.trim()?.lowercase().orEmpty()
+        val idSuffix = node.viewIdResourceName?.substringAfterLast('/')?.lowercase().orEmpty()
+
+        val descKeywords = setOf(
+            "send", "senden", "nachricht senden", "schicken",
+            "envoyer", "enviar", "invia", "inviare",
+        )
+        val idKeywords = setOf(
+            "send", "send_button", "sendbutton", "btnsend", "btn_send",
+            "action_send", "sendicon", "send_icon",
+        )
+        val textKeywords = setOf("send", "senden")
+
+        return desc in descKeywords ||
+            idSuffix in idKeywords ||
+            text in textKeywords
     }
 
     private fun findFocusedEditText(node: AccessibilityNodeInfo?): AccessibilityNodeInfo? {

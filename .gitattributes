@@ -1,0 +1,4 @@
+# Force LF line endings for shell scripts so they execute on Linux
+# even when checked out on Windows (where Git would otherwise convert to CRLF).
+*.sh text eol=lf
+gradlew text eol=lf
