@@ -679,7 +679,12 @@ settingsModal.addEventListener("click", (e) => {
 });
 
 async function loadSettings() {
-  document.getElementById("serverUrl").value = serverUrl;
+  const serverUrlInput = document.getElementById("serverUrl");
+  const saveServerBtn = document.getElementById("saveServerUrl");
+  const effectiveServer = serverUrl || window.location.origin;
+  serverUrlInput.value = effectiveServer;
+  serverUrlInput.dataset.saved = effectiveServer;
+  saveServerBtn.disabled = true;
 
   checkServer();
   loadModels();
@@ -1295,10 +1300,23 @@ _setupPromptEditor("cleanup", "cleanupPromptText", "cleanupPromptSave", "cleanup
 _setupPromptEditor("rephrase", "rephrasePromptText", "rephrasePromptSave", "rephrasePromptReset", "rephrasePromptStatus");
 
 // Server URL
-document.getElementById("saveServerUrl").addEventListener("click", () => {
-  serverUrl = document.getElementById("serverUrl").value.trim();
+const _serverUrlInput = document.getElementById("serverUrl");
+const _saveServerBtn = document.getElementById("saveServerUrl");
+
+_serverUrlInput.addEventListener("input", () => {
+  const current = _serverUrlInput.value.trim();
+  const saved = _serverUrlInput.dataset.saved || "";
+  _saveServerBtn.disabled = current === "" || current === saved;
+});
+
+_saveServerBtn.addEventListener("click", () => {
+  const newUrl = _serverUrlInput.value.trim();
+  if (!newUrl) return;
+  serverUrl = newUrl;
   localStorage.setItem("stt-server", serverUrl);
   syncToAndroid("server", serverUrl);
+  _serverUrlInput.dataset.saved = newUrl;
+  _saveServerBtn.disabled = true;
   checkServer();
 });
 
