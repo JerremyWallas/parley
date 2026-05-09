@@ -1,0 +1,20 @@
+# Override für Setups hinter Tailscale Serve (TLS-Termination + Cert-Renewal
+# laufen über Tailscale, nicht über nginx).
+#
+# Voraussetzung auf dem Host:
+#   tailscale serve --bg --https=7443 http://localhost:7800
+#
+# Aktivieren:
+#   docker compose -f docker-compose.yml -f docker-compose.tailscale.yml up -d
+#
+# Aufruf danach: https://<machine>.<tailnet>.ts.net:7443
+services:
+  nginx:
+    # ports: nur lokal binden — Tailscale Serve übernimmt das öffentliche
+    # Routing samt Let's-Encrypt-Cert. HTTPS-Port 443 entfällt im Container.
+    ports: !override
+      - "127.0.0.1:${HTTP_PORT:-7800}:80"
+    # volumes: das Cert-Volume entfällt; stattdessen wird die HTTP-only
+    # nginx-Konfig eingehängt (überschreibt die TLS-fähige aus dem Image).
+    volumes: !override
+      - ./nginx/default-http.conf:/etc/nginx/conf.d/default.conf:ro

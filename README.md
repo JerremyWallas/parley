@@ -194,6 +194,30 @@ parley/
 └── README.md
 ```
 
+## Setup hinter Tailscale Serve (empfohlen, wenn Tailscale schon im Einsatz)
+
+Tailscale übernimmt TLS-Termination und Zertifikats-Renewal. Vorteile:
+
+- kein selbst gemanagtes Cert, kein Cron-Job für Renewal
+- echtes Let's-Encrypt-Zertifikat (kein Self-Signed mehr in der App)
+- nginx-Container läuft TLS-frei und nur auf `127.0.0.1`
+
+**Voraussetzungen:**
+
+- Tailscale auf dem Host installiert + eingeloggt
+- HTTPS-Zertifikate aktiviert: Admin-Console → DNS → HTTPS Certificates → *Enable*
+
+**Aktivieren:**
+
+```bash
+tailscale serve --bg --https=7443 http://localhost:7800
+docker compose -f docker-compose.yml -f docker-compose.tailscale.yml up -d
+```
+
+Danach erreichbar unter `https://<machine>.<tailnet>.ts.net:7443`. Du kannst diese URL als Server-URL in den Parley-Clients eintragen — kein Cert-Warning mehr, weil Tailscale ein echtes Let's-Encrypt-Cert für deinen MagicDNS-Hostnamen ausstellt.
+
+Beim Compose-Override (`docker-compose.tailscale.yml`) wird der nginx-Port-Bind auf `127.0.0.1:7800:80` reduziert (kein öffentlich gemappter Port mehr), und eine HTTP-only nginx-Konfig (`nginx/default-http.conf`) eingehängt. Die alte Self-Signed-Cert-Logik bleibt unangetastet — wer ohne Tailscale fährt, nutzt einfach `docker-compose.yml` solo wie bisher.
+
 ## Security
 
 Parley ist fuer den Einsatz im **lokalen Heimnetz** konzipiert. Folgende Punkte solltest du beachten:
