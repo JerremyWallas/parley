@@ -6,4 +6,8 @@ httpx==0.28.1
 websocket-client==1.8.0
 Pillow==11.2.1
 numpy==2.2.5
+# soundfile bringt libsndfile als Bundle mit (auch auf Windows). Ab
+# libsndfile 1.0.30 unterstützt es Ogg/Opus-Output, wir komprimieren
+# damit ~10× gegenüber WAV PCM für unterwegs.
+soundfile==0.13.0
 pyinstaller==6.13.0

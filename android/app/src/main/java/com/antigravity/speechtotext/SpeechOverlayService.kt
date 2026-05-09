@@ -348,19 +348,44 @@ class SpeechOverlayService : AccessibilityService() {
 
         thread {
             try {
-                val result = ApiClient.transcribe(serverUrl, audioData, mode)
+                val result = ApiClient.transcribeWithRetry(
+                    serverUrl = serverUrl,
+                    audioData = audioData,
+                    mode = mode,
+                    onRetry = { nextAttempt, totalAttempts ->
+                        // Marshalling auf den Main-Thread — Toast erfordert es,
+                        // und ohne diese Notification merkt der User nicht, dass
+                        // unter schlechter Verbindung im Hintergrund noch gearbeitet wird.
+                        overlayBtn.post {
+                            Toast.makeText(
+                                this,
+                                "Erneuter Versuch ($nextAttempt/$totalAttempts)…",
+                                Toast.LENGTH_SHORT,
+                            ).show()
+                        }
+                    },
+                )
                 val text = result.processedText.ifBlank { result.rawText }
+
+                // Mirror the entry into the server-side history so the Web-UI shows
+                // overlay recordings too. Best-effort: a network glitch here must not
+                // block the actual text insertion below.
+                try {
+                    ApiClient.saveHistory(
+                        serverUrl = serverUrl,
+                        rawText = result.rawText,
+                        processedText = result.processedText,
+                        mode = result.mode,
+                        language = result.language,
+                    )
+                } catch (e: Exception) {
+                    Log.w(TAG, "History save failed", e)
+                }
 
                 // Insert text into focused field
                 val focused = findFocusedEditText(rootInActiveWindow)
                 if (focused != null) {
-                    val args = Bundle().apply {
-                        putCharSequence(
-                            AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
-                            text,
-                        )
-                    }
-                    focused.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+                    insertAtCursor(focused, text)
                     Log.i(TAG, "Text inserted: ${text.take(80)}...")
 
                     if (prefs.getBoolean("auto_send", false)) {
@@ -448,6 +473,63 @@ class SpeechOverlayService : AccessibilityService() {
         return desc in descKeywords ||
             idSuffix in idKeywords ||
             text in textKeywords
+    }
+
+    /**
+     * Insert [newText] into [focused].
+     *
+     * Behaviour:
+     *   - No active selection (caret only)  → splice newText in at the caret,
+     *     keeping everything that was already in the field.
+     *   - Active selection (start != end)   → replace the selected range with
+     *     newText, treating the selection as the user's explicit "overwrite
+     *     this part" intent.
+     *
+     * Why this exists: bare ACTION_SET_TEXT replaces the entire field, so
+     * apps that auto-select all text on focus (some chat composers) would
+     * silently nuke the user's previous input. This implementation matches
+     * native typing behaviour — type with selection = replace selection;
+     * type without selection = insert at caret.
+     */
+    private fun insertAtCursor(focused: AccessibilityNodeInfo, newText: String) {
+        val existing = focused.text?.toString() ?: ""
+        val rawStart = focused.textSelectionStart
+        val rawEnd = focused.textSelectionEnd
+
+        // textSelectionStart/End are -1 when the platform has no cursor info.
+        // In that case we behave like "caret at end" so we append.
+        val from: Int
+        val to: Int
+        if (rawStart in 0..existing.length && rawEnd in 0..existing.length) {
+            from = minOf(rawStart, rawEnd)
+            to = maxOf(rawStart, rawEnd)
+        } else {
+            from = existing.length
+            to = existing.length
+        }
+
+        val combined = existing.substring(0, from) + newText + existing.substring(to)
+
+        val setArgs = Bundle().apply {
+            putCharSequence(
+                AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
+                combined,
+            )
+        }
+        val ok = focused.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, setArgs)
+        if (!ok) {
+            Log.w(TAG, "ACTION_SET_TEXT returned false — field may not support edits")
+            return
+        }
+
+        // Move caret to just behind the freshly inserted text. Best-effort —
+        // some fields ignore ACTION_SET_SELECTION; we accept that silently.
+        val newCaret = from + newText.length
+        val selectionArgs = Bundle().apply {
+            putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, newCaret)
+            putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, newCaret)
+        }
+        focused.performAction(AccessibilityNodeInfo.ACTION_SET_SELECTION, selectionArgs)
     }
 
     private fun findFocusedEditText(node: AccessibilityNodeInfo?): AccessibilityNodeInfo? {

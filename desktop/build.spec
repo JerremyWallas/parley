@@ -1,11 +1,16 @@
 # PyInstaller spec file for Parley Desktop Client
 # Build with: cd desktop && pyinstaller build.spec
 
+# Collect soundfile's bundled libsndfile DLL/SO — PyInstaller's default
+# heuristics don't always pick it up, and without it the Opus encoder
+# silently falls back to WAV at runtime.
+from PyInstaller.utils.hooks import collect_dynamic_libs, collect_data_files
+
 a = Analysis(
     ['main.py'],
     pathex=[],
-    binaries=[],
-    datas=[],
+    binaries=collect_dynamic_libs('soundfile'),
+    datas=collect_data_files('soundfile'),
     hiddenimports=[
         'pynput.keyboard._win32',
         'pynput.mouse._win32',
@@ -15,6 +20,7 @@ a = Analysis(
         'icon',
         'urllib3',
         'websocket',
+        'soundfile',
     ],
     hookspath=[],
     hooksconfig={},

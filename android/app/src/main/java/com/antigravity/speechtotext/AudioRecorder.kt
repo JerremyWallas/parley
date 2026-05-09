@@ -1,113 +1,111 @@
 package com.antigravity.speechtotext
 
-import android.media.AudioFormat
-import android.media.AudioRecord
+import android.content.Context
 import android.media.MediaRecorder
-import java.io.ByteArrayOutputStream
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
+import android.os.Build
+import android.util.Log
+import java.io.File
 
-class AudioRecorder(
-    private val sampleRate: Int = 16000,
-    private val channelConfig: Int = AudioFormat.CHANNEL_IN_MONO,
-    private val audioFormat: Int = AudioFormat.ENCODING_PCM_16BIT,
-) {
-    private var audioRecord: AudioRecord? = null
-    private var isRecording = false
-    private var recordingThread: Thread? = null
-    private val audioData = ByteArrayOutputStream()
+/**
+ * Records audio from the microphone as Ogg/Opus.
+ *
+ * Why Opus instead of WAV PCM:
+ *   WAV PCM @ 16 kHz mono = ~32 KB/s. A 10-second recording = 320 KB.
+ *   On flaky mobile networks (Edge, weak HSDPA, foreign roaming) that's
+ *   borderline unsendable. Opus VBR @ 24 kbps = ~3 KB/s, the same recording
+ *   shrinks to ~30 KB — roughly a 10× reduction with no loss in Whisper
+ *   transcription quality. Server (server/main.py) accepts Ogg/Opus directly
+ *   via ffmpeg/Whisper.
+ *
+ * Implementation note: MediaRecorder writes to a file descriptor, not a
+ * ByteArray. We write to a temp file in cacheDir, then read it back in stop()
+ * and delete it. Slightly wasteful, but MediaRecorder is dramatically simpler
+ * than the alternative (AudioRecord → MediaCodec → manual Ogg muxing).
+ */
+class AudioRecorder(private val context: Context) {
+
+    companion object {
+        private const val TAG = "AudioRecorder"
+        private const val SAMPLE_RATE = 16000
+        private const val BIT_RATE = 24000  // 24 kbps VBR — speech sweet spot
+    }
+
+    private var recorder: MediaRecorder? = null
+    private var outputFile: File? = null
+    @Volatile private var recording = false
 
     fun start() {
-        val bufferSize = AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat)
-        if (bufferSize <= 0) {
-            throw IllegalStateException("AudioRecord.getMinBufferSize failed: $bufferSize")
+        if (recording) {
+            Log.w(TAG, "start() called while already recording — ignoring")
+            return
         }
 
-        val record = AudioRecord(
-            MediaRecorder.AudioSource.MIC,
-            sampleRate,
-            channelConfig,
-            audioFormat,
-            bufferSize * 2,
-        )
-
-        if (record.state != AudioRecord.STATE_INITIALIZED) {
-            record.release()
-            throw IllegalStateException("AudioRecord not initialized (permission missing or mic busy)")
+        val file = File.createTempFile("parley_rec_", ".ogg", context.cacheDir)
+        val r = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            MediaRecorder(context)
+        } else {
+            @Suppress("DEPRECATION")
+            MediaRecorder()
         }
 
-        audioData.reset()
-        record.startRecording()
-
-        if (record.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
-            record.release()
-            throw IllegalStateException("AudioRecord failed to start recording")
-        }
-
-        audioRecord = record
-        isRecording = true
-
-        recordingThread = Thread {
-            val buffer = ByteArray(bufferSize)
-            while (isRecording) {
-                val read = record.read(buffer, 0, buffer.size)
-                if (read > 0) {
-                    synchronized(audioData) {
-                        audioData.write(buffer, 0, read)
-                    }
-                }
-            }
-        }.also { it.start() }
-    }
-
-    fun stop(): ByteArray {
-        if (!isRecording && audioRecord == null) {
-            return createWav(ByteArray(0))
-        }
-        isRecording = false
-        recordingThread?.join(1000)
         try {
-            audioRecord?.stop()
-        } catch (_: IllegalStateException) {
-            // stop() on an already-stopped recorder throws; swallow.
+            r.setAudioSource(MediaRecorder.AudioSource.MIC)
+            r.setOutputFormat(MediaRecorder.OutputFormat.OGG)
+            r.setAudioEncoder(MediaRecorder.AudioEncoder.OPUS)
+            r.setAudioSamplingRate(SAMPLE_RATE)
+            r.setAudioChannels(1)
+            r.setAudioEncodingBitRate(BIT_RATE)
+            r.setOutputFile(file.absolutePath)
+            r.prepare()
+            r.start()
+        } catch (e: Exception) {
+            Log.e(TAG, "MediaRecorder setup failed", e)
+            try { r.release() } catch (_: Exception) { /* ignore */ }
+            file.delete()
+            throw IllegalStateException("Failed to start Opus recorder: ${e.message}", e)
         }
-        audioRecord?.release()
-        audioRecord = null
 
-        val pcmData = synchronized(audioData) { audioData.toByteArray() }
-        return createWav(pcmData)
+        recorder = r
+        outputFile = file
+        recording = true
+        Log.i(TAG, "Recording started → ${file.absolutePath}")
     }
 
-    private fun createWav(pcmData: ByteArray): ByteArray {
-        val channels = if (channelConfig == AudioFormat.CHANNEL_IN_MONO) 1 else 2
-        val bitsPerSample = 16
-        val byteRate = sampleRate * channels * bitsPerSample / 8
-        val blockAlign = channels * bitsPerSample / 8
-        val dataSize = pcmData.size
-        val totalSize = 36 + dataSize
+    /**
+     * Stop recording and return the encoded Ogg/Opus bytes. The temp file is
+     * always deleted, even on failure. Returns an empty array if recording
+     * never started or produced no audio.
+     */
+    fun stop(): ByteArray {
+        val r = recorder
+        val file = outputFile
+        recorder = null
+        outputFile = null
+        recording = false
 
-        val buffer = ByteBuffer.allocate(44 + dataSize).order(ByteOrder.LITTLE_ENDIAN)
+        if (r == null || file == null) return ByteArray(0)
 
-        // RIFF header
-        buffer.put("RIFF".toByteArray())
-        buffer.putInt(totalSize)
-        buffer.put("WAVE".toByteArray())
+        try {
+            r.stop()
+        } catch (e: RuntimeException) {
+            // MediaRecorder.stop() throws if no valid audio was captured
+            // (e.g. tap was too short). Swallow and continue — we'll return
+            // whatever bytes are on disk.
+            Log.w(TAG, "MediaRecorder.stop() threw — likely no audio captured: ${e.message}")
+        } finally {
+            try { r.reset() } catch (_: Exception) { /* ignore */ }
+            try { r.release() } catch (_: Exception) { /* ignore */ }
+        }
 
-        // fmt chunk
-        buffer.put("fmt ".toByteArray())
-        buffer.putInt(16) // chunk size
-        buffer.putShort(1) // PCM format
-        buffer.putShort(channels.toShort())
-        buffer.putInt(sampleRate)
-        buffer.putInt(byteRate)
-        buffer.putShort(blockAlign.toShort())
-        buffer.putShort(bitsPerSample.toShort())
-
-        // data chunk
-        buffer.put("data".toByteArray())
-        buffer.putInt(dataSize)
-        buffer.put(pcmData)
-
-        return buffer.array()
+        return try {
+            if (file.exists() && file.length() > 0) file.readBytes() else ByteArray(0)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to read recorded audio", e)
+            ByteArray(0)
+        } finally {
+            try { file.delete() } catch (_: Exception) { /* ignore */ }
+        }
     }
+
+    fun isRecording(): Boolean = recording
 }

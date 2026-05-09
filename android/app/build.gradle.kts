@@ -9,10 +9,13 @@ android {
 
     defaultConfig {
         applicationId = "com.antigravity.speechtotext"
-        minSdk = 26
+        // minSdk 29 (Android 10): MediaRecorder.OutputFormat.OGG +
+        // AudioEncoder.OPUS sowie FOREGROUND_SERVICE_TYPE_MICROPHONE
+        // brauchen API 29. Kostet uns Android 8/9 Support (<3% Markt 2026).
+        minSdk = 29
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "1.1"
     }
 
     buildTypes {

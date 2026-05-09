@@ -30,7 +30,11 @@ class RecordingService : Service() {
     }
 
     private val binder = LocalBinder()
-    private var recorder: AudioRecorder? = null
+    // `recorder` is mutated from the Service main thread (onStartCommand,
+    // onDestroy) and read from the AccessibilityService binder caller. Both
+    // happen on the main looper today, but @Volatile makes the publication
+    // explicit and cheap insurance against a future async call site.
+    @Volatile private var recorder: AudioRecorder? = null
     private var foregroundActive = false
 
     inner class LocalBinder : Binder() {
@@ -62,7 +66,7 @@ class RecordingService : Service() {
         }
         recorder = null
         demoteForeground()
-        return data
+        return data?.takeIf { it.isNotEmpty() }
     }
 
     /** Called via binder when the user cancels (drag, swipe-away). */
@@ -84,7 +88,7 @@ class RecordingService : Service() {
             return
         }
         try {
-            val r = AudioRecorder()
+            val r = AudioRecorder(applicationContext)
             r.start()
             recorder = r
             Log.i(TAG, "Recording started")

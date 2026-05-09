@@ -1,11 +1,8 @@
 """API client for Parley server — WebSocket streaming + REST fallback."""
-import io
 import json
-import wave
 import ssl
 import logging
 import threading
-import numpy as np
 import websocket
 import httpx
 
@@ -20,20 +17,6 @@ _ssl_context.verify_mode = ssl.CERT_NONE
 
 def _ws_url(server_url: str, path: str) -> str:
     return server_url.rstrip("/").replace("https://", "wss://").replace("http://", "ws://") + path
-
-
-def _make_wav_chunk(frames: list[np.ndarray], sample_rate: int = 16000) -> bytes:
-    """Convert audio frames to WAV bytes."""
-    if not frames:
-        return b""
-    audio = np.concatenate(frames, axis=0)
-    buf = io.BytesIO()
-    with wave.open(buf, "wb") as wf:
-        wf.setnchannels(1)
-        wf.setsampwidth(2)
-        wf.setframerate(sample_rate)
-        wf.writeframes(audio.tobytes())
-    return buf.getvalue()
 
 
 class StreamingSession:
@@ -89,11 +72,12 @@ class StreamingSession:
         if not self._connected.wait(timeout=3.0):
             logger.warning("WebSocket connection timed out")
 
-    def send_audio(self, wav_bytes: bytes):
-        """Send audio chunk to server."""
+    def send_audio(self, audio_bytes: bytes):
+        """Send audio chunk to server. Format depends on what the recorder produces
+        (Ogg/Opus by default, WAV in fallback mode); the server detects via magic bytes."""
         if self._ws and self._ws.sock and self._ws.sock.connected:
             try:
-                self._ws.send(wav_bytes, opcode=websocket.ABNF.OPCODE_BINARY)
+                self._ws.send(audio_bytes, opcode=websocket.ABNF.OPCODE_BINARY)
             except Exception as e:
                 logger.error(f"Failed to send audio chunk: {e}")
 
@@ -158,14 +142,26 @@ class StreamingSession:
         logger.debug("WebSocket closed")
 
 
-def transcribe(server_url: str, audio_bytes: bytes, mode: str = "raw") -> dict:
-    """REST fallback — send complete audio and get result. Used by voice-send."""
+def transcribe(server_url: str, audio_bytes: bytes, mode: str = "raw",
+               content_type: str = "audio/ogg", filename: str = "recording.ogg") -> dict:
+    """REST transcription — send complete audio, get result.
+
+    Default content_type is audio/ogg because the main client path now records
+    Ogg/Opus (~10× smaller than WAV). Voice-send and other internal callers
+    that still produce WAV inline can pass content_type="audio/wav" explicitly.
+
+    Timeouts are split per phase to be mobile-friendly:
+      connect=30s — TLS handshake under flaky cell signal
+      write=240s  — Edge-class uploads even for WAV-fallback payloads
+      read=180s   — server-side LLM step can take a while on big models
+    """
     url = f"{server_url.rstrip('/')}/api/transcribe"
 
-    with httpx.Client(timeout=120.0, verify=False) as client:
+    timeout = httpx.Timeout(connect=30.0, read=180.0, write=240.0, pool=10.0)
+    with httpx.Client(timeout=timeout, verify=False) as client:
         response = client.post(
             url,
-            files={"audio": ("recording.wav", audio_bytes, "audio/wav")},
+            files={"audio": (filename, audio_bytes, content_type)},
             data={"mode": mode},
         )
         response.raise_for_status()
@@ -211,4 +207,6 @@ def transcribe_with_retry(server_url: str, audio_bytes: bytes, mode: str = "raw"
             on_retry(attempt, max_retries)
         time.sleep(delay)
 
-    raise last_error
+    # Defensive: with max_retries=0 and no exception assigning last_error,
+    # we'd otherwise `raise None`. Practically unreachable but free.
+    raise last_error if last_error else RuntimeError("Transcription failed with no recorded error")

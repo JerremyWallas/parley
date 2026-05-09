@@ -6,6 +6,7 @@ import threading
 import wave
 import sounddevice as sd
 import numpy as np
+import soundfile as sf
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +84,14 @@ class AudioRecorder:
             self._recording = False
 
     def stop(self) -> bytes:
+        """Stop recording and return audio as Ogg/Opus bytes.
+
+        Opus VBR @ 24 kbps shrinks a 10s recording from ~320 KB (WAV) to ~30 KB
+        — roughly a 10× reduction. The server (server/main.py) accepts Ogg/Opus
+        directly via ffmpeg/Whisper, no preprocessing needed.
+
+        Returns empty bytes if no audio was captured.
+        """
         with self._lock:
             self._recording = False
             if self._stream:
@@ -102,6 +111,25 @@ class AudioRecorder:
         if not frames:
             return b""
 
+        return self._frames_to_opus(frames)
+
+    def stop_wav(self) -> bytes:
+        """Stop recording and return audio as WAV bytes.
+
+        Kept for callers that need a lossless local copy (e.g. local fallbacks
+        or debugging dumps). Production code paths should use stop().
+        """
+        with self._lock:
+            self._recording = False
+            if self._stream:
+                self._stream.stop()
+                self._stream.close()
+                self._stream = None
+            self._on_chunk = None
+            frames = list(self._frames)
+
+        if not frames:
+            return b""
         return self._frames_to_wav(frames)
 
     def _callback(self, indata, frames, time, status):
@@ -128,6 +156,36 @@ class AudioRecorder:
             wf.setframerate(self.sample_rate)
             wf.writeframes(audio_data.tobytes())
         return buf.getvalue()
+
+    def _frames_to_opus(self, frames: list[np.ndarray]) -> bytes:
+        """Encode int16 PCM frames to Ogg/Opus via libsndfile.
+
+        Falls back to WAV if libsndfile is too old to support Opus
+        (libsndfile < 1.0.30) — server still accepts WAV, the user just
+        misses the bandwidth win.
+        """
+        audio_data = np.concatenate(frames, axis=0)
+        try:
+            buf = io.BytesIO()
+            sf.write(
+                buf,
+                audio_data,
+                self.sample_rate,
+                format="OGG",
+                subtype="OPUS",
+            )
+            data = buf.getvalue()
+            duration_s = len(audio_data) / self.sample_rate
+            wav_size = len(audio_data) * 2  # int16 = 2 bytes/sample
+            ratio = wav_size / max(len(data), 1)
+            logger.info(
+                f"Opus encode: {len(data)} bytes for {duration_s:.1f}s "
+                f"(WAV would be ~{wav_size} bytes, {ratio:.1f}× smaller)"
+            )
+            return data
+        except Exception as e:
+            logger.warning(f"Opus encoding failed ({e}); falling back to WAV")
+            return self._frames_to_wav(frames)
 
     def record_for(self, seconds: float) -> bytes:
         """Record for a fixed duration and return audio bytes."""

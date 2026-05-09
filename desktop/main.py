@@ -67,19 +67,19 @@ _active_preset_id = "raw"  # currently active preset id
 _server_connected = False
 preset_hotkey_parts = {}  # {"<ctrl>+1": (["<ctrl>", "1"], "raw"), ...}
 _pending_audio_dir = Path.home() / ".config" / "parley" / "pending_audio"
-_pending_wav_bytes = None  # WAV bytes of last recording (kept for retry)
+_pending_audio_bytes = None  # Encoded audio (Ogg/Opus, or WAV fallback) of last recording, kept for retry
 _pending_mode = None  # mode/preset used for last recording
 _retry_in_progress = False
 
 
-def _save_pending_audio(wav_bytes: bytes, mode: str):
+def _save_pending_audio(audio_bytes: bytes, mode: str):
     """Save audio to disk so it survives crashes and can be retried."""
-    global _pending_wav_bytes, _pending_mode
-    _pending_wav_bytes = wav_bytes
+    global _pending_audio_bytes, _pending_mode
+    _pending_audio_bytes = audio_bytes
     _pending_mode = mode
     try:
         _pending_audio_dir.mkdir(parents=True, exist_ok=True)
-        (_pending_audio_dir / "recording.wav").write_bytes(wav_bytes)
+        (_pending_audio_dir / "recording.ogg").write_bytes(audio_bytes)
         (_pending_audio_dir / "recording.json").write_text(
             json.dumps({"mode": mode, "timestamp": time.time()}), encoding="utf-8"
         )
@@ -90,18 +90,18 @@ def _save_pending_audio(wav_bytes: bytes, mode: str):
 
 def _cleanup_pending_audio():
     """Remove pending audio after successful transcription."""
-    global _pending_wav_bytes, _pending_mode
-    _pending_wav_bytes = None
+    global _pending_audio_bytes, _pending_mode
+    _pending_audio_bytes = None
     _pending_mode = None
-    try:
-        wav = _pending_audio_dir / "recording.wav"
-        meta = _pending_audio_dir / "recording.json"
-        if wav.exists():
-            wav.unlink()
-        if meta.exists():
-            meta.unlink()
-    except Exception as e:
-        logger.debug(f"Pending audio cleanup: {e}")
+    # Auch das alte recording.wav löschen, falls noch ein Rest aus
+    # einer vorherigen Version auf der Platte liegt.
+    for name in ("recording.ogg", "recording.wav", "recording.json"):
+        try:
+            f = _pending_audio_dir / name
+            if f.exists():
+                f.unlink()
+        except Exception as e:
+            logger.debug(f"Pending audio cleanup ({name}): {e}")
 
 
 def _cleanup_stale_pending_audio():
@@ -256,13 +256,13 @@ def _stop_recording():
     global _streaming_session, _active_mode
     _active_mode = None
     logger.info("Stopping recording — sending audio via WebSocket")
-    wav_bytes = audio_rec.stop()
+    audio_bytes = audio_rec.stop()
     update_icon(processing=True)
 
-    if _streaming_session and wav_bytes:
+    if _streaming_session and audio_bytes:
         # Save audio BEFORE sending so it survives network failures
-        _save_pending_audio(wav_bytes, _active_preset_id)
-        _streaming_session.send_audio(wav_bytes)
+        _save_pending_audio(audio_bytes, _active_preset_id)
+        _streaming_session.send_audio(audio_bytes)
         _streaming_session.finish()
     elif _streaming_session:
         _streaming_session.close()
@@ -380,17 +380,17 @@ def _on_error(message: str):
 
     logger.error(f"Server error: {message}")
 
-    if _pending_wav_bytes and _pending_mode:
+    if _pending_audio_bytes and _pending_mode:
         # Auto-retry in background thread using REST fallback
-        wav = _pending_wav_bytes
+        audio = _pending_audio_bytes
         mode = _pending_mode
-        threading.Thread(target=_auto_retry, args=(wav, mode), daemon=True).start()
+        threading.Thread(target=_auto_retry, args=(audio, mode), daemon=True).start()
     else:
         update_icon()
         _show_error_popup(message)
 
 
-def _auto_retry(wav_bytes: bytes, mode: str):
+def _auto_retry(audio_bytes: bytes, mode: str):
     """Attempt transcription via REST with exponential backoff."""
     global _retry_in_progress
     _retry_in_progress = True
@@ -403,7 +403,7 @@ def _auto_retry(wav_bytes: bytes, mode: str):
 
     try:
         result = api_client.transcribe_with_retry(
-            cfg["server_url"], wav_bytes, mode,
+            cfg["server_url"], audio_bytes, mode,
             max_retries=3, on_retry=_on_retry,
         )
         _retry_in_progress = False
@@ -607,7 +607,11 @@ def _transcribe_blocks(blocks, sample_rate: int) -> str:
         wf.writeframes(audio.tobytes())
 
     try:
-        result = api_client.transcribe(cfg["server_url"], buf.getvalue(), "raw")
+        # This path produces WAV inline, so override the new Ogg/Opus default.
+        result = api_client.transcribe(
+            cfg["server_url"], buf.getvalue(), "raw",
+            content_type="audio/wav", filename="recording.wav",
+        )
         return (result.get("raw_text") or "").lower().strip()
     except Exception as e:
         logger.error(f"Voice-send transcription failed: {e}")
@@ -699,21 +703,24 @@ def open_settings(icon, item):
 
 def retry_last_recording(icon, item):
     """Manual retry: re-send pending audio via REST with retries."""
-    wav = _pending_wav_bytes
+    audio = _pending_audio_bytes
     mode = _pending_mode
-    if not wav:
-        # Try loading from disk
+    if not audio:
+        # Try loading from disk — prefer .ogg (current format), fall back to
+        # .wav for migrations from a pre-Opus build.
         try:
-            wav_path = _pending_audio_dir / "recording.wav"
-            meta_path = _pending_audio_dir / "recording.json"
-            if wav_path.exists() and meta_path.exists():
-                wav = wav_path.read_bytes()
-                meta = json.loads(meta_path.read_text(encoding="utf-8"))
-                mode = meta.get("mode", "raw")
+            for fname in ("recording.ogg", "recording.wav"):
+                audio_path = _pending_audio_dir / fname
+                meta_path = _pending_audio_dir / "recording.json"
+                if audio_path.exists() and meta_path.exists():
+                    audio = audio_path.read_bytes()
+                    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                    mode = meta.get("mode", "raw")
+                    break
         except Exception:
             pass
-    if wav:
-        threading.Thread(target=_auto_retry, args=(wav, mode or "raw"), daemon=True).start()
+    if audio:
+        threading.Thread(target=_auto_retry, args=(audio, mode or "raw"), daemon=True).start()
     else:
         overlay.show_notification("Kein Audio zum Wiederholen")
 
@@ -776,7 +783,11 @@ def _build_preset_menu_items():
 
 def build_menu():
     last_preview = (last_result_text[:30] + "...") if len(last_result_text) > 30 else last_result_text
-    has_pending = _pending_wav_bytes is not None or (_pending_audio_dir / "recording.wav").exists()
+    has_pending = (
+        _pending_audio_bytes is not None
+        or (_pending_audio_dir / "recording.ogg").exists()
+        or (_pending_audio_dir / "recording.wav").exists()
+    )
     return pystray.Menu(
         pystray.MenuItem("Preset", pystray.Menu(*_build_preset_menu_items())),
         pystray.Menu.SEPARATOR,

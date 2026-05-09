@@ -1,12 +1,16 @@
 package com.antigravity.speechtotext
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.http.SslError
 import android.os.Bundle
 import android.provider.Settings
 import android.view.View
 import android.webkit.JavascriptInterface
+import android.webkit.PermissionRequest
 import android.webkit.SslErrorHandler
+import android.webkit.WebChromeClient
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.EditText
@@ -15,6 +19,8 @@ import android.widget.ProgressBar
 import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 
@@ -26,8 +32,13 @@ import androidx.core.view.WindowInsetsCompat
  */
 class WebSettingsActivity : AppCompatActivity() {
 
+    companion object {
+        private const val REQ_RECORD_AUDIO = 1001
+    }
+
     private lateinit var webView: WebView
     private lateinit var progress: ProgressBar
+    private var pendingServerUrl: String? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -51,7 +62,35 @@ class WebSettingsActivity : AppCompatActivity() {
             return
         }
 
-        configureWebView(serverUrl)
+        ensureMicPermissionAndConfigure(serverUrl)
+    }
+
+    private fun ensureMicPermissionAndConfigure(serverUrl: String) {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+            == PackageManager.PERMISSION_GRANTED) {
+            configureWebView(serverUrl)
+        } else {
+            pendingServerUrl = serverUrl
+            ActivityCompat.requestPermissions(
+                this,
+                arrayOf(Manifest.permission.RECORD_AUDIO),
+                REQ_RECORD_AUDIO,
+            )
+        }
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray,
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == REQ_RECORD_AUDIO) {
+            // Egal ob erteilt oder verweigert — Web-UI laden. Wenn verweigert,
+            // sieht der User weiter "Mikrofon-Zugriff verweigert" beim Aufnahme-Versuch.
+            pendingServerUrl?.let { configureWebView(it) }
+            pendingServerUrl = null
+        }
     }
 
     private fun configureWebView(serverUrl: String) {
@@ -72,6 +111,25 @@ class WebSettingsActivity : AppCompatActivity() {
 
             override fun onPageFinished(view: WebView, url: String) {
                 progress.visibility = View.GONE
+            }
+        }
+
+        // WebView lehnt getUserMedia() per Default ab, selbst wenn der App-Prozess
+        // RECORD_AUDIO hat. Ohne diesen WebChromeClient sieht der User in der
+        // Web-UI die Meldung "Mikrofon-Zugriff verweigert".
+        webView.webChromeClient = object : WebChromeClient() {
+            override fun onPermissionRequest(request: PermissionRequest) {
+                val wanted = request.resources
+                    .filter { it == PermissionRequest.RESOURCE_AUDIO_CAPTURE }
+                    .toTypedArray()
+                val sysGranted = ContextCompat.checkSelfPermission(
+                    this@WebSettingsActivity, Manifest.permission.RECORD_AUDIO,
+                ) == PackageManager.PERMISSION_GRANTED
+                if (wanted.isNotEmpty() && sysGranted) {
+                    request.grant(wanted)
+                } else {
+                    request.deny()
+                }
             }
         }
 
@@ -104,7 +162,7 @@ class WebSettingsActivity : AppCompatActivity() {
                     getSharedPreferences("stt_prefs", MODE_PRIVATE).edit()
                         .putString("server_url", url)
                         .apply()
-                    configureWebView(url)
+                    ensureMicPermissionAndConfigure(url)
                 }
             }
             .setNegativeButton("Abbrechen") { _, _ -> finish() }
