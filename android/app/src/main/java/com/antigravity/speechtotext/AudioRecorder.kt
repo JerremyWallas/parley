@@ -12,9 +12,9 @@ import java.io.File
  * Why Opus instead of WAV PCM:
  *   WAV PCM @ 16 kHz mono = ~32 KB/s. A 10-second recording = 320 KB.
  *   On flaky mobile networks (Edge, weak HSDPA, foreign roaming) that's
- *   borderline unsendable. Opus VBR @ 24 kbps = ~3 KB/s, the same recording
- *   shrinks to ~30 KB — roughly a 10× reduction with no loss in Whisper
- *   transcription quality. Server (server/main.py) accepts Ogg/Opus directly
+ *   borderline unsendable. Opus VBR @ 32 kbps = ~4 KB/s, the same recording
+ *   shrinks to ~40 KB — still ~8× reduction with comfortable headroom for
+ *   noisy environments. Server (server/main.py) accepts Ogg/Opus directly
  *   via ffmpeg/Whisper.
  *
  * Implementation note: MediaRecorder writes to a file descriptor, not a
@@ -27,7 +27,7 @@ class AudioRecorder(private val context: Context) {
     companion object {
         private const val TAG = "AudioRecorder"
         private const val SAMPLE_RATE = 16000
-        private const val BIT_RATE = 24000  // 24 kbps VBR — speech sweet spot
+        private const val BIT_RATE = 32000  // 32 kbps VBR — Puffer für laute Umgebungen
     }
 
     private var recorder: MediaRecorder? = null
@@ -49,7 +49,10 @@ class AudioRecorder(private val context: Context) {
         }
 
         try {
-            r.setAudioSource(MediaRecorder.AudioSource.MIC)
+            // VOICE_RECOGNITION statt MIC: umgeht die OEM-DSP-Pipeline (AGC,
+            // Noise-Suppression, Echo-Cancellation), die für Telefonie getuned
+            // ist und bei Whisper leise Konsonanten wegfiltern kann.
+            r.setAudioSource(MediaRecorder.AudioSource.VOICE_RECOGNITION)
             r.setOutputFormat(MediaRecorder.OutputFormat.OGG)
             r.setAudioEncoder(MediaRecorder.AudioEncoder.OPUS)
             r.setAudioSamplingRate(SAMPLE_RATE)

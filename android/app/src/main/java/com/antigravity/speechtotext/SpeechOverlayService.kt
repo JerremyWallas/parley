@@ -46,6 +46,12 @@ class SpeechOverlayService : AccessibilityService() {
     private var isRecording = false
     private var isOverlayVisible = false
     private var isKeyboardVisible = false
+    @Volatile private var retryingPending = false
+    // Throttle für prewarmConnection: das Overlay erscheint mehrmals pro Stunde,
+    // ein Health-Roundtrip pro Show wäre Strom-/Daten-Verschwendung. Alle 5 min
+    // reicht — der Sinn ist nur, dass der TLS-Tunnel beim nächsten Record-Tap steht.
+    @Volatile private var lastPrewarmMs = 0L
+    private val prewarmIntervalMs = 5 * 60_000L
 
     private val recordingConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
@@ -128,8 +134,73 @@ class SpeechOverlayService : AccessibilityService() {
             windowManager.addView(overlayView, layoutParams)
             isOverlayVisible = true
             Log.i(TAG, "Overlay shown (keyboard visible)")
+            warmConnectionAndRetryPending()
         } catch (e: Exception) {
             Log.e(TAG, "Failed to show overlay", e)
+        }
+    }
+
+    /**
+     * Beim Overlay-Show: TLS-Connection vorwärmen und ggf. zurückgestellte
+     * Aufnahmen nachreichen. Beides asynchron, beides best-effort.
+     */
+    private fun warmConnectionAndRetryPending() {
+        val prefs = getSharedPreferences(PREFS_KEY, MODE_PRIVATE)
+        val serverUrl = prefs.getString("server_url", "") ?: ""
+        if (serverUrl.isBlank()) return
+
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (now - lastPrewarmMs >= prewarmIntervalMs) {
+            ApiClient.prewarmConnection(serverUrl)
+            lastPrewarmMs = now
+        }
+        retryPendingRecordings(serverUrl)
+    }
+
+    private fun retryPendingRecordings(serverUrl: String) {
+        if (retryingPending) return
+        val items = PendingQueue.list(this)
+        if (items.isEmpty()) return
+
+        retryingPending = true
+        thread {
+            var transcribed = 0
+            try {
+                for (item in items) {
+                    try {
+                        val audioData = item.file.readBytes()
+                        val result = ApiClient.transcribeWithRetry(
+                            serverUrl = serverUrl,
+                            audioData = audioData,
+                            mode = item.mode,
+                        )
+                        ApiClient.saveHistory(
+                            serverUrl = serverUrl,
+                            rawText = result.rawText,
+                            processedText = result.processedText,
+                            mode = result.mode,
+                            language = result.language,
+                        )
+                        PendingQueue.delete(item)
+                        transcribed++
+                    } catch (e: Exception) {
+                        // Lassen wir liegen — beim nächsten Overlay-Open neuer Versuch.
+                        Log.w(TAG, "Pending retry failed for ${item.file.name}: ${e.message}")
+                    }
+                }
+            } finally {
+                retryingPending = false
+            }
+            if (transcribed > 0) {
+                handler.post {
+                    val msg = if (transcribed == 1) {
+                        "1 alte Aufnahme nachträglich transkribiert"
+                    } else {
+                        "$transcribed alte Aufnahmen nachträglich transkribiert"
+                    }
+                    Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+                }
+            }
         }
     }
 
@@ -159,16 +230,12 @@ class SpeechOverlayService : AccessibilityService() {
     // --- Keyboard Detection ---
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        if (event == null) return
-
-        when (event.eventType) {
-            AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> {
-                checkKeyboardState()
-            }
-            AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> {
-                // Some keyboards trigger content changes
-                checkKeyboardState()
-            }
+        // Bewusst nur TYPE_WINDOW_STATE_CHANGED — TYPE_WINDOW_CONTENT_CHANGED
+        // feuert bei jedem Scroll, jeder Animation, jedem Caret-Blink. Filter
+        // läuft zwar schon in accessibility_config.xml, hier zusätzliche
+        // Defense-in-Depth, falls die Manifest-Config mal verstellt wird.
+        if (event?.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            checkKeyboardState()
         }
     }
 
@@ -402,9 +469,27 @@ class SpeechOverlayService : AccessibilityService() {
                     Log.i(TAG, "No focused field, copied to clipboard")
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "Transcription failed", e)
-                overlayBtn.post {
-                    Toast.makeText(this, "Fehler: ${e.message}", Toast.LENGTH_SHORT).show()
+                // 4xx → permanenter Client-Fehler, Queueing hilft nichts.
+                // Alles andere (Netz weg, 5xx, Timeout) → speichern und beim
+                // nächsten Overlay-Open erneut versuchen.
+                val isClientError = (e as? ApiClient.HttpStatusException)
+                    ?.let { it.status in 400..499 } == true
+                if (isClientError) {
+                    Log.e(TAG, "Transcription failed (client error)", e)
+                    overlayBtn.post {
+                        Toast.makeText(this, "Fehler: ${e.message}", Toast.LENGTH_SHORT).show()
+                    }
+                } else {
+                    Log.e(TAG, "Transcription failed, queueing for retry", e)
+                    val queued = PendingQueue.enqueue(this, audioData, mode)
+                    overlayBtn.post {
+                        val msg = if (queued) {
+                            "Aufnahme gespeichert, wird später hochgeladen"
+                        } else {
+                            "Fehler: ${e.message}"
+                        }
+                        Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+                    }
                 }
             } finally {
                 overlayBtn.post {
@@ -492,22 +577,31 @@ class SpeechOverlayService : AccessibilityService() {
      * type without selection = insert at caret.
      */
     private fun insertAtCursor(focused: AccessibilityNodeInfo, newText: String) {
-        val existing = focused.text?.toString() ?: ""
         val rawStart = focused.textSelectionStart
         val rawEnd = focused.textSelectionEnd
 
-        // textSelectionStart/End are -1 when the platform has no cursor info.
-        // In that case we behave like "caret at end" so we append.
-        val from: Int
-        val to: Int
-        if (rawStart in 0..existing.length && rawEnd in 0..existing.length) {
-            from = minOf(rawStart, rawEnd)
-            to = maxOf(rawStart, rawEnd)
-        } else {
-            from = existing.length
-            to = existing.length
+        // Custom-Composer-Falle (WhatsApp & Co.): das Feld gibt seinen Placeholder
+        // ("Nachricht") als node.text zurück und meldet selStart/selEnd = -1.
+        // Ohne Cursor-Info können wir nicht verlässlich splicen — und an "Nachricht"
+        // appenden ergibt genau den Bug, den wir vermeiden wollen. Der -1-Zustand
+        // tritt im Test nur bei leerem Feld auf (echter Inhalt kommt mit gültigen
+        // Selection-Indizes), also schreiben wir hier einfach den neuen Text.
+        if (rawStart < 0 || rawEnd < 0) {
+            val args = Bundle().apply {
+                putCharSequence(
+                    AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
+                    newText,
+                )
+            }
+            if (!focused.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)) {
+                Log.w(TAG, "ACTION_SET_TEXT returned false — field may not support edits")
+            }
+            return
         }
 
+        val existing = focused.text?.toString() ?: ""
+        val from = minOf(rawStart, rawEnd).coerceIn(0, existing.length)
+        val to = maxOf(rawStart, rawEnd).coerceIn(0, existing.length)
         val combined = existing.substring(0, from) + newText + existing.substring(to)
 
         val setArgs = Bundle().apply {

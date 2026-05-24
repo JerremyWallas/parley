@@ -1,7 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
-    <!-- SECURITY: Erlaubt Self-Signed Certs und Cleartext fuer den Heimserver.
-         Fuer Produktions-Apps: cleartextTrafficPermitted="false" und nur system-Zertifikate. -->
+    <!-- SECURITY: Erlaubt Self-Signed Certs (User-CA) für den Heimserver-Default-
+         Setup. Im Tailscale-Modus mit Let's-Encrypt-Cert reicht system; wir lassen
+         beide Quellen offen, damit beide Setups ohne App-Patch funktionieren.
+         Cleartext bleibt erlaubt für lokale HTTP-Tests im Heimnetz. Für
+         Produktions-Apps: cleartextTrafficPermitted="false" und nur "system". -->
     <base-config cleartextTrafficPermitted="true">
         <trust-anchors>
             <certificates src="system" />

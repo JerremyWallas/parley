@@ -27,31 +27,36 @@ object ApiClient {
 
     private const val TAG = "ApiClient"
 
-    // SECURITY: SSL-Verifikation ist deaktiviert, da der Heimserver Self-Signed Certs nutzt.
-    // Das ist im lokalen Netzwerk akzeptabel, aber kein Muster fuer Produktions-Apps.
-    // Fuer den Einsatz mit richtigen Zertifikaten: TrustManager und HostnameVerifier entfernen.
+    // SECURITY: SSL-Verifikation ist deaktiviert, weil Parley in zwei Modi läuft:
+    //   1) Tailscale-Setup mit echtem Let's-Encrypt-Cert — System-CA würde greifen,
+    //      aber wer per Tailscale-IP statt MagicDNS-Hostname zugreift, hätte
+    //      Hostname-Mismatch.
+    //   2) Default-Setup mit Self-Signed-Cert vom nginx-Container.
+    // Beide Modi bedienen wir hier: TrustManager akzeptiert alles, HostnameVerifier
+    // ebenfalls. Das ist defensible im Heimnetz/VPN; im Tailscale-Modus ist der
+    // Transport ohnehin WireGuard-verschlüsselt.
     private val client: OkHttpClient by lazy {
         val trustManager = object : X509TrustManager {
             override fun checkClientTrusted(chain: Array<X509Certificate>, authType: String) {}
             override fun checkServerTrusted(chain: Array<X509Certificate>, authType: String) {}
             override fun getAcceptedIssuers(): Array<X509Certificate> = arrayOf()
         }
-
         val sslContext = SSLContext.getInstance("TLS").apply {
             init(null, arrayOf<TrustManager>(trustManager), SecureRandom())
         }
 
-        // Timeouts mobilfunk-tauglich:
-        //   connect 30s — toleriert TLS-Handshake-Aussetzer.
-        //   write   240s — Opus-Aufnahmen sind ~10× kleiner als WAV, aber wir
-        //                  lassen Luft für Edge/2G-artige Verbindungen.
-        //   read    180s — LLM-Verarbeitung kann auf großen Modellen Sekunden dauern.
-        // OkHttp.retryOnConnectionFailure ist by default true (single Connection-Retry
-        // bei IO-Fehler) — wir ergänzen die fachliche Retry-Schleife oben drauf.
+        // Timeouts:
+        //   connect 4s — schnelles Offline-Detect. Wenn TCP-Connect in 4s nicht
+        //                steht, ist der Server in dem Moment effektiv unerreichbar.
+        //                Mit 4 Versuchen × 4s + 3,5s Backoff failt der Pfad
+        //                spätestens nach ~20s und wir landen in der Pending-Queue.
+        //   write   240s — Audio-Upload: Opus ist klein, aber lange Aufnahmen
+        //                  über Edge/2G dürfen nicht abreißen.
+        //   read    180s — Whisper + LLM auf großen Modellen können Sekunden dauern.
         OkHttpClient.Builder()
             .sslSocketFactory(sslContext.socketFactory, trustManager)
             .hostnameVerifier { _, _ -> true }
-            .connectTimeout(30, TimeUnit.SECONDS)
+            .connectTimeout(4, TimeUnit.SECONDS)
             .readTimeout(180, TimeUnit.SECONDS)
             .writeTimeout(240, TimeUnit.SECONDS)
             .retryOnConnectionFailure(true)
@@ -74,6 +79,23 @@ object ApiClient {
             }
             return presets
         }
+    }
+
+    /**
+     * Fire-and-forget request to /api/health. Wird beim Overlay-Show
+     * ausgelöst, damit der TLS-Tunnel steht, bevor der User auf Record drückt.
+     * Stille Fehlerbehandlung — wenn's nicht klappt, ist das auch nicht schlimm.
+     */
+    fun prewarmConnection(serverUrl: String) {
+        Thread {
+            try {
+                val request = Request.Builder()
+                    .url("${serverUrl.trimEnd('/')}/api/health")
+                    .get()
+                    .build()
+                client.newCall(request).execute().close()
+            } catch (_: Exception) { /* prewarm best-effort */ }
+        }.apply { isDaemon = true }.start()
     }
 
     fun setActivePreset(serverUrl: String, presetId: String) {
@@ -164,7 +186,11 @@ object ApiClient {
         maxRetries: Int = 3,
         onRetry: ((nextAttempt: Int, totalAttempts: Int) -> Unit)? = null,
     ): TranscriptionResult {
-        val backoffMs = longArrayOf(2000L, 4000L, 8000L)
+        // Aggressive backoff: erster Retry binnen 500 ms, alle Versuche nach
+        // ~3,5 s durch. Auf flaky Mobilfunk ist eine schnelle Wiederholung
+        // meist effektiver als langes Warten — wenn nach 3,5 s nichts steht,
+        // schiebt der Aufrufer die Aufnahme in die Pending-Queue.
+        val backoffMs = longArrayOf(500L, 1000L, 2000L)
         val totalAttempts = maxRetries + 1
         var lastError: Exception? = null
 

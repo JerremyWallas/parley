@@ -25,6 +25,13 @@ android {
         }
     }
 
+    // BuildConfig.DEBUG wird in WebSettingsActivity referenziert, um WebView-
+    // DevTools nur im Debug-Build zu aktivieren. Ab AGP 8 muss buildConfig
+    // explizit eingeschaltet werden.
+    buildFeatures {
+        buildConfig = true
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17

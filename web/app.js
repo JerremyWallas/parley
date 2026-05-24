@@ -131,9 +131,20 @@ function getOpusMimeType() {
 
 async function startRecording() {
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true },
-    });
+    // Erst mit echoCancellation/noiseSuppression versuchen — bessere Sprachqualität.
+    // Auf manchen Android-WebViews schlägt das fehl mit "Unable to select communication
+    // device", weil Chromium dann eine Comm-Audio-Route öffnen will und die nicht
+    // verfügbar ist. In dem Fall fallen wir auf simple Default-Mic-Aufnahme zurück;
+    // Whisper kommt mit unverarbeitetem Audio sehr gut klar.
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true },
+      });
+    } catch (commErr) {
+      console.warn("getUserMedia with comm constraints failed, falling back to plain mic:", commErr);
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    }
 
     // Setup visualizer
     audioContext = new AudioContext();

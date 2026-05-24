@@ -1,8 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+    Wir reagieren ausschließlich auf typeWindowStateChanged. typeWindowContentChanged
+    feuert bei jedem Scroll/Animations-Frame und kostet spürbar Akku, ohne uns
+    relevante Information zu geben — die Tastatur erscheint/verschwindet
+    grundsätzlich als Window-State-Change, nicht als Content-Change.
+
+    notificationTimeout=500ms (statt 100ms) entspannt Android's Event-Throttling
+    weiter: Tastatur-Open/Close braucht keinen Sub-Sekunden-Trigger.
+-->
 <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
     android:description="@string/accessibility_description"
-    android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged"
+    android:accessibilityEventTypes="typeWindowStateChanged"
     android:accessibilityFeedbackType="feedbackGeneric"
-    android:notificationTimeout="100"
+    android:notificationTimeout="500"
     android:canRetrieveWindowContent="true"
     android:accessibilityFlags="flagDefault|flagRetrieveInteractiveWindows" />

@@ -6,7 +6,9 @@ import android.content.pm.PackageManager
 import android.net.http.SslError
 import android.os.Bundle
 import android.provider.Settings
+import android.util.Log
 import android.view.View
+import android.webkit.ConsoleMessage
 import android.webkit.JavascriptInterface
 import android.webkit.PermissionRequest
 import android.webkit.SslErrorHandler
@@ -33,6 +35,7 @@ import androidx.core.view.WindowInsetsCompat
 class WebSettingsActivity : AppCompatActivity() {
 
     companion object {
+        private const val TAG = "WebSettings"
         private const val REQ_RECORD_AUDIO = 1001
     }
 
@@ -94,6 +97,12 @@ class WebSettingsActivity : AppCompatActivity() {
     }
 
     private fun configureWebView(serverUrl: String) {
+        // DevTools (chrome://inspect) nur in Debug-Builds. Im Release wäre das
+        // ein unnötiger Angriffsvektor und kostet ohne Nutzen Strom/RAM.
+        if (BuildConfig.DEBUG) {
+            WebView.setWebContentsDebuggingEnabled(true)
+        }
+
         webView.settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
@@ -105,7 +114,11 @@ class WebSettingsActivity : AppCompatActivity() {
 
         webView.webViewClient = object : WebViewClient() {
             override fun onReceivedSslError(view: WebView, handler: SslErrorHandler, error: SslError) {
-                // Heimserver nutzt Self-Signed Cert — bewusst akzeptieren.
+                // Heimserver liefert je nach Setup ein Self-Signed Cert (Default-
+                // Compose) oder ein Let's-Encrypt-Cert via Tailscale Serve. Beim
+                // Tailscale-Pfad löst der Browser sauber gegen die System-CA auf;
+                // beim Default-Pfad muss der Self-Signed-Pfad bewusst akzeptiert
+                // werden, weil der User sein eigenes Cert betreibt.
                 handler.proceed()
             }
 
@@ -130,6 +143,18 @@ class WebSettingsActivity : AppCompatActivity() {
                 } else {
                     request.deny()
                 }
+            }
+
+            override fun onConsoleMessage(msg: ConsoleMessage): Boolean {
+                // Nur ERROR-Level ins Logcat — sonst überflutet jede JS-Page das
+                // System-Log und die App wirkt gesprächiger als sie sein sollte.
+                if (msg.messageLevel() == ConsoleMessage.MessageLevel.ERROR) {
+                    Log.w(
+                        TAG,
+                        "JS error ${msg.sourceId()}:${msg.lineNumber()} ${msg.message()}",
+                    )
+                }
+                return true
             }
         }
 
@@ -167,6 +192,20 @@ class WebSettingsActivity : AppCompatActivity() {
             }
             .setNegativeButton("Abbrechen") { _, _ -> finish() }
             .show()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Web-UI ruft loadHistory() nur beim initialen Page-Load. Wenn der User
+        // zwischendurch via Overlay diktiert hat, fehlen die neuen Einträge im
+        // Verlauf, bis wir sie hier nachfordern. Best-effort: wenn die JS-Funktion
+        // nicht da ist (z. B. Page-Load läuft noch), passiert einfach nichts.
+        if (::webView.isInitialized) {
+            webView.evaluateJavascript(
+                "if (typeof loadHistory === 'function') { loadHistory(); }",
+                null,
+            )
+        }
     }
 
     override fun onDestroy() {
