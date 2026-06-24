@@ -70,6 +70,7 @@ _pending_audio_dir = Path.home() / ".config" / "parley" / "pending_audio"
 _pending_audio_bytes = None  # Encoded audio (Ogg/Opus, or WAV fallback) of last recording, kept for retry
 _pending_mode = None  # mode/preset used for last recording
 _retry_in_progress = False
+_voice_listening = False  # True while the voice-send listener owns the mic
 
 
 def _save_pending_audio(audio_bytes: bytes, mode: str):
@@ -264,15 +265,29 @@ def _stop_recording():
         _save_pending_audio(audio_bytes, _active_preset_id)
         _streaming_session.send_audio(audio_bytes)
         _streaming_session.finish()
-    elif _streaming_session:
-        _streaming_session.close()
-        _streaming_session = None
+    elif audio_bytes:
+        # The WS session was already torn down (a WS error fired on the socket
+        # thread before the hotkey was released, or it never connected). Don't
+        # drop the recording or leave the icon stuck on "processing" — persist
+        # the audio and recover it via the REST retry path.
+        if _streaming_session:
+            _streaming_session.close()
+            _streaming_session = None
+        _save_pending_audio(audio_bytes, _active_preset_id)
+        threading.Thread(target=_auto_retry, args=(audio_bytes, _active_preset_id), daemon=True).start()
+    else:
+        # No audio captured — just make sure the UI recovers.
+        if _streaming_session:
+            _streaming_session.close()
+            _streaming_session = None
         update_icon()
 
 
 def on_key_press(key):
     global _active_mode
     key_str = key_to_str(key)
+    if key_str in pressed_keys:
+        return  # ignore OS key auto-repeat: pynput re-delivers held keys with no release
     pressed_keys.add(key_str)
 
     # If currently recording in toggle mode: any of these stops it
@@ -297,6 +312,10 @@ def on_key_press(key):
         if all(part in pressed_keys for part in parts):
             _switch_preset_with_notification(preset_id)
             return
+
+    # Don't start a new recording while the voice-send listener owns the mic.
+    if _voice_listening:
+        return
 
     # Toggle hotkey: all parts pressed → start toggle recording
     if toggle_parts and all(part in pressed_keys for part in toggle_parts):
@@ -467,12 +486,17 @@ def handle_send_mode():
         text_inserter.press_enter()
 
     elif send_mode == "voice":
+        global _voice_listening
         max_seconds = cfg.get("send_listen_seconds", 10)
         logger.info(f"Voice-send: listening for up to {max_seconds}s...")
         update_icon(listening=True)
 
         send_triggers = ["senden", "sende", "send", "abschicken", "absenden", "enter"]
-        detected = _voice_send_listen(max_seconds, send_triggers)
+        _voice_listening = True
+        try:
+            detected = _voice_send_listen(max_seconds, send_triggers)
+        finally:
+            _voice_listening = False
 
         if detected:
             logger.info("Send command detected — pressing Enter")

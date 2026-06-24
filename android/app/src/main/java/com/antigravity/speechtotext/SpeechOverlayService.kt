@@ -46,6 +46,7 @@ class SpeechOverlayService : AccessibilityService() {
     private var isRecording = false
     private var isOverlayVisible = false
     private var isKeyboardVisible = false
+    @Volatile private var destroyed = false
     @Volatile private var retryingPending = false
     // Throttle für prewarmConnection: das Overlay erscheint mehrmals pro Stunde,
     // ein Health-Roundtrip pro Show wäre Strom-/Daten-Verschwendung. Alle 5 min
@@ -174,15 +175,22 @@ class SpeechOverlayService : AccessibilityService() {
                             audioData = audioData,
                             mode = item.mode,
                         )
-                        ApiClient.saveHistory(
-                            serverUrl = serverUrl,
-                            rawText = result.rawText,
-                            processedText = result.processedText,
-                            mode = result.mode,
-                            language = result.language,
-                        )
+                        // Transcription succeeded — remove the queued file NOW so a
+                        // best-effort history glitch below can't cause a re-transcribe
+                        // (which would duplicate the Web-UI history entry).
                         PendingQueue.delete(item)
                         transcribed++
+                        try {
+                            ApiClient.saveHistory(
+                                serverUrl = serverUrl,
+                                rawText = result.rawText,
+                                processedText = result.processedText,
+                                mode = result.mode,
+                                language = result.language,
+                            )
+                        } catch (e: Exception) {
+                            Log.w(TAG, "History save failed for ${item.file.name}: ${e.message}")
+                        }
                     } catch (e: Exception) {
                         // Lassen wir liegen — beim nächsten Overlay-Open neuer Versuch.
                         Log.w(TAG, "Pending retry failed for ${item.file.name}: ${e.message}")
@@ -434,6 +442,10 @@ class SpeechOverlayService : AccessibilityService() {
                 )
                 val text = result.processedText.ifBlank { result.rawText }
 
+                // Service was torn down while the network call was in flight — bail
+                // out before touching the (now invalid) overlay / accessibility tree.
+                if (destroyed) return@thread
+
                 // Mirror the entry into the server-side history so the Web-UI shows
                 // overlay recordings too. Best-effort: a network glitch here must not
                 // block the actual text insertion below.
@@ -645,6 +657,7 @@ class SpeechOverlayService : AccessibilityService() {
 
     override fun onDestroy() {
         super.onDestroy()
+        destroyed = true  // signal any in-flight transcription thread to bail out
         handler.removeCallbacks(longPressRunnable)
         hideOverlay()
         cancelRecording()

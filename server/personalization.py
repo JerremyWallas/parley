@@ -21,6 +21,22 @@ def _ensure_data_dir():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 
+def _atomic_write_lines(path, lines):
+    """Rewrite a file from `lines` via tempfile+os.replace so a crash/ENOSPC
+    mid-write can't truncate or corrupt it. Caller must hold _file_lock."""
+    fd, tmp_path = tempfile.mkstemp(dir=DATA_DIR, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.writelines(lines)
+        os.replace(tmp_path, path)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
 # --- Corrections (Few-Shot Learning) ---
 
 MAX_CORRECTIONS = int(os.getenv("MAX_CORRECTIONS", "100"))
@@ -47,8 +63,7 @@ def _truncate_corrections():
     with open(CORRECTIONS_FILE, "r", encoding="utf-8") as f:
         lines = f.readlines()
     if len(lines) > MAX_CORRECTIONS:
-        with open(CORRECTIONS_FILE, "w", encoding="utf-8") as f:
-            f.writelines(lines[-MAX_CORRECTIONS:])
+        _atomic_write_lines(CORRECTIONS_FILE, lines[-MAX_CORRECTIONS:])
         logger.info(f"Truncated corrections to last {MAX_CORRECTIONS} entries")
 
 
@@ -235,8 +250,7 @@ def _truncate_history():
     with open(HISTORY_FILE, "r", encoding="utf-8") as f:
         lines = f.readlines()
     if len(lines) > MAX_HISTORY:
-        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
-            f.writelines(lines[-MAX_HISTORY:])
+        _atomic_write_lines(HISTORY_FILE, lines[-MAX_HISTORY:])
         logger.info(f"Truncated history to last {MAX_HISTORY} entries")
 
 

@@ -17,6 +17,7 @@ function syncToAndroid(key, value) {
 }
 let mediaRecorder = null;
 let isRecording = false;
+let _starting = false; // true between startRecording() entry and mic actually open
 let audioContext = null;
 let analyser = null;
 let animationFrame = null;
@@ -24,6 +25,7 @@ let lastRawText = "";
 let ws = null;
 let _localAudioChunks = []; // Keep local copy for REST fallback
 let _pendingAudioBlob = null; // Kept alive for retry after failures
+let _onRecorderStopped = null; // dispatch deferred until the final audio chunk arrives
 
 // --- DOM ---
 const recordBtn = document.getElementById("recordBtn");
@@ -130,6 +132,10 @@ function getOpusMimeType() {
 }
 
 async function startRecording() {
+  // Synchronous guard BEFORE the first await: a rapid second press can't open a
+  // second mic stream while the first getUserMedia() is still pending.
+  if (_starting || isRecording) return;
+  _starting = true;
   try {
     // Erst mit echoCancellation/noiseSuppression versuchen — bessere Sprachqualität.
     // Auf manchen Android-WebViews schlägt das fehl mit "Unable to select communication
@@ -179,6 +185,14 @@ async function startRecording() {
         audioContext = null;
       }
       clearCanvas();
+      // The final dataavailable chunk has now been delivered, so the blob is
+      // complete (no truncated tail). Build it here and run the deferred dispatch.
+      _pendingAudioBlob = new Blob(_localAudioChunks, { type: getOpusMimeType() });
+      if (_onRecorderStopped) {
+        const cb = _onRecorderStopped;
+        _onRecorderStopped = null;
+        cb();
+      }
     };
 
     mediaRecorder.start(500);
@@ -204,10 +218,12 @@ async function startRecording() {
     }
 
     isRecording = true;
+    _starting = false;
     recordBtn.classList.add("recording");
     recordBtn.querySelector(".label").textContent = "Aufnahme läuft...";
     statusEl.textContent = "";
   } catch (err) {
+    _starting = false;
     statusEl.textContent = "Mikrofon-Zugriff verweigert";
     console.error("Recording error:", err);
   }
@@ -221,45 +237,52 @@ function stopRecording() {
   recordBtn.querySelector(".label").textContent = "Verarbeite...";
   retryBtn.classList.add("hidden");
 
-  if (mediaRecorder && mediaRecorder.state === "recording") {
-    mediaRecorder.stop();
-  }
-
-  // Consolidate audio for retry BEFORE clearing chunks
-  _pendingAudioBlob = new Blob(_localAudioChunks, { type: getOpusMimeType() });
-
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    // WebSocket connected — send stop signal, results come via WS messages
-    ws.send(JSON.stringify({ type: "stop", mode: currentMode, preset: currentMode }));
-    // Safety timeout: if no response within 30s, auto-retry via REST
-    _streamTimeout = setTimeout(() => {
-      if (recordBtn.classList.contains("processing")) {
-        streamingSegments = [];
-        streamingLLMText = "";
-        if (ws) { ws.close(); ws = null; }
-        // Auto-retry via REST instead of giving up
-        if (_pendingAudioBlob && _pendingAudioBlob.size > 0) {
-          statusEl.textContent = "Zeitüberschreitung — versuche erneut...";
-          sendAudioRestWithRetry(_pendingAudioBlob);
-        } else {
-          statusEl.textContent = "Zeitüberschreitung — keine Antwort vom Server";
-          recordBtn.classList.remove("processing");
-          recordBtn.querySelector(".label").textContent = "Halten zum Sprechen";
+  // Dispatch only AFTER the recorder fully stops (onstop), so the final ~500ms
+  // audio chunk is included in the blob and has been streamed over the WS.
+  _onRecorderStopped = () => {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      // All audio chunks have now been sent — signal stop; results come via WS.
+      ws.send(JSON.stringify({ type: "stop", mode: currentMode, preset: currentMode }));
+      // Safety timeout: if no response within 30s, auto-retry via REST
+      _streamTimeout = setTimeout(() => {
+        if (recordBtn.classList.contains("processing")) {
+          streamingSegments = [];
+          streamingLLMText = "";
+          if (ws) { ws.close(); ws = null; }
+          // Auto-retry via REST instead of giving up
+          if (_pendingAudioBlob && _pendingAudioBlob.size > 0) {
+            statusEl.textContent = "Zeitüberschreitung — versuche erneut...";
+            sendAudioRestWithRetry(_pendingAudioBlob);
+          } else {
+            statusEl.textContent = "Zeitüberschreitung — keine Antwort vom Server";
+            recordBtn.classList.remove("processing");
+            recordBtn.querySelector(".label").textContent = "Halten zum Sprechen";
+          }
         }
-      }
-      _streamTimeout = null;
-    }, 30000);
-  } else {
-    // No WebSocket — send all audio via REST with retry
-    _localAudioChunks = [];
-    if (_pendingAudioBlob.size > 0) {
-      sendAudioRestWithRetry(_pendingAudioBlob);
+        _streamTimeout = null;
+      }, 30000);
     } else {
-      statusEl.textContent = "Keine Audio-Daten";
-      _pendingAudioBlob = null;
-      recordBtn.classList.remove("processing");
-      recordBtn.querySelector(".label").textContent = "Halten zum Sprechen";
+      // No WebSocket — send all audio via REST with retry
+      _localAudioChunks = [];
+      if (_pendingAudioBlob && _pendingAudioBlob.size > 0) {
+        sendAudioRestWithRetry(_pendingAudioBlob);
+      } else {
+        statusEl.textContent = "Keine Audio-Daten";
+        _pendingAudioBlob = null;
+        recordBtn.classList.remove("processing");
+        recordBtn.querySelector(".label").textContent = "Halten zum Sprechen";
+      }
     }
+  };
+
+  if (mediaRecorder && mediaRecorder.state === "recording") {
+    mediaRecorder.stop(); // fires onstop -> builds blob -> runs _onRecorderStopped
+  } else {
+    // Recorder already inactive — run immediately with whatever we captured.
+    _pendingAudioBlob = new Blob(_localAudioChunks, { type: getOpusMimeType() });
+    const cb = _onRecorderStopped;
+    _onRecorderStopped = null;
+    if (cb) cb();
   }
 }
 
@@ -650,7 +673,7 @@ function renderHistory(entries) {
     const mode = item.mode || "raw";
     const time = item.time ? new Date(item.time).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" }) : "";
     el.innerHTML = `
-      <span class="time">${time}<span class="mode-tag">${mode}</span></span>
+      <span class="time">${time}<span class="mode-tag">${escapeHtml(mode)}</span></span>
       <div class="text">${escapeHtml(text)}</div>
     `;
     el.addEventListener("click", async () => {

@@ -44,6 +44,7 @@ class StreamingSession:
         self._connected = threading.Event()
         self._raw_text = ""
         self._processed_parts = []
+        self._completed = False  # set once a terminal callback (done/error) has fired
 
     def _on_open(self, ws):
         self._connected.set()
@@ -55,6 +56,7 @@ class StreamingSession:
         logger.info(f"Opening WebSocket to {url}")
 
         self._connected.clear()
+        self._completed = False
         self._ws = websocket.WebSocketApp(
             url,
             on_open=self._on_open,
@@ -122,6 +124,7 @@ class StreamingSession:
         elif msg_type == "llm_done":
             processed = data.get("processed_text", self._raw_text)
             logger.info(f"LLM done: '{processed[:80]}...'")
+            self._completed = True
             if self.on_done:
                 self.on_done(self._raw_text, processed)
             self.close()
@@ -129,17 +132,26 @@ class StreamingSession:
         elif msg_type == "error":
             error_msg = data.get("message", "Unknown error")
             logger.error(f"Server error: {error_msg}")
+            self._completed = True
             if self.on_error:
                 self.on_error(error_msg)
             self.close()
 
     def _on_ws_error(self, ws, error):
         logger.error(f"WebSocket error: {error}")
+        self._completed = True
         if self.on_error:
             self.on_error(str(error))
 
     def _on_close(self, ws, close_status_code, close_msg):
         logger.debug("WebSocket closed")
+        # If the socket closed cleanly before any terminal result (e.g. the server
+        # dropped the connection between transcription_done and llm_done), route it
+        # to on_error so the caller recovers instead of hanging on "processing".
+        if not self._completed:
+            self._completed = True
+            if self.on_error:
+                self.on_error("connection closed before result")
 
 
 def transcribe(server_url: str, audio_bytes: bytes, mode: str = "raw",

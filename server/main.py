@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 from contextlib import asynccontextmanager
@@ -69,13 +70,18 @@ def _get_gpu_info() -> dict:
     return info
 
 
+async def _get_gpu_info_async() -> dict:
+    """Async wrapper: run the blocking nvidia-smi probe off the event loop."""
+    return await asyncio.get_event_loop().run_in_executor(None, _get_gpu_info)
+
+
 @app.get("/api/health")
 async def health():
     """Server health check with GPU and Ollama status."""
     ollama_status = await cleanup.check_ollama()
     active_llm = cleanup._get_active_model()
 
-    gpu = _get_gpu_info()
+    gpu = await _get_gpu_info_async()
     gpu_name = gpu["gpu_name"]
     gpu_memory_used = gpu["gpu_memory_used"]
     gpu_memory_total = gpu["gpu_memory_total"]
@@ -83,7 +89,7 @@ async def health():
     prefs = personalization.get_preferences()
     return {
         "status": "ok",
-        "whisper_model": config.WHISPER_MODEL,
+        "whisper_model": prefs.get("whisper_model", config.WHISPER_MODEL),
         "llm_model": active_llm,
         "gpu_name": gpu_name,
         "gpu_memory_used_mb": gpu_memory_used,
@@ -111,8 +117,10 @@ async def transcribe_audio(
     # Build initial prompt from glossary
     initial_prompt = personalization.build_initial_prompt()
 
-    # Transcribe
-    result = transcriber.transcribe(audio_bytes, initial_prompt=initial_prompt)
+    # Transcribe — offload the blocking CTranslate2 inference off the event loop
+    result = await asyncio.get_event_loop().run_in_executor(
+        None, lambda: transcriber.transcribe(audio_bytes, initial_prompt=initial_prompt)
+    )
     raw_text = result["raw_text"]
 
     if not raw_text:
@@ -250,8 +258,12 @@ async def get_preferences():
 
 @app.put("/api/preferences")
 async def update_preferences(data: dict):
-    personalization.save_preferences(data)
-    return data
+    # Merge into existing prefs so a stale full-object PUT from one device can't
+    # wipe keys another device changed in the meantime (presets, model, language).
+    merged = personalization.get_preferences()
+    merged.update(data)
+    personalization.save_preferences(merged)
+    return merged
 
 
 # --- History (server-side, synced across devices) ---
@@ -311,7 +323,7 @@ async def get_models():
         pass
 
     # Get GPU total VRAM
-    gpu_total_mb = _get_gpu_info()["gpu_memory_total"]
+    gpu_total_mb = (await _get_gpu_info_async())["gpu_memory_total"]
 
     models = []
     for m in AVAILABLE_MODELS:
@@ -410,7 +422,7 @@ async def get_whisper_models():
     active = prefs.get("whisper_model", config.WHISPER_MODEL)
 
     # Get GPU total VRAM
-    gpu_total_mb = _get_gpu_info()["gpu_memory_total"]
+    gpu_total_mb = (await _get_gpu_info_async())["gpu_memory_total"]
 
     return {
         "models": transcriber.list_models(gpu_total_mb),
@@ -569,7 +581,29 @@ async def ws_transcribe(ws: WebSocket):
                 language = ""
                 duration_ms = 0
 
-                for result in transcriber.transcribe_streaming(audio_bytes, initial_prompt=initial_prompt):
+                # Run the blocking CTranslate2 generator in a worker thread and
+                # stream its results back over an asyncio.Queue, so the decode never
+                # freezes the event loop (other clients + this socket stay live).
+                loop = asyncio.get_running_loop()
+                seg_queue: asyncio.Queue = asyncio.Queue()
+                _DONE = object()
+
+                def _produce():
+                    try:
+                        for result in transcriber.transcribe_streaming(audio_bytes, initial_prompt=initial_prompt):
+                            loop.call_soon_threadsafe(seg_queue.put_nowait, result)
+                    except Exception as exc:
+                        loop.call_soon_threadsafe(seg_queue.put_nowait, exc)
+                    finally:
+                        loop.call_soon_threadsafe(seg_queue.put_nowait, _DONE)
+
+                producer = loop.run_in_executor(None, _produce)
+                while True:
+                    result = await seg_queue.get()
+                    if result is _DONE:
+                        break
+                    if isinstance(result, Exception):
+                        raise result
                     if result["type"] == "segment":
                         full_text_parts.append(result["text"])
                         language = result["language"]
@@ -580,6 +614,7 @@ async def ws_transcribe(ws: WebSocket):
                     elif result["type"] == "transcription_done":
                         language = result["language"]
                         duration_ms = result["duration_ms"]
+                await producer  # surface any executor-side error
 
                 raw_text = " ".join(full_text_parts).strip()
 
