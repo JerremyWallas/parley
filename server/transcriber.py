@@ -24,11 +24,15 @@ AVAILABLE_WHISPER_MODELS = sorted([
     {"id": "small", "name": "Small", "desc": "Schnell, gute Qualitaet", "vram": "~2 GB", "vram_mb": 2048, "quality": 2, "repo": "Systran/faster-whisper-small"},
     {"id": "medium", "name": "Medium", "desc": "Ausgewogen, sehr gute Qualitaet", "vram": "~5 GB", "vram_mb": 5120, "quality": 3, "repo": "Systran/faster-whisper-medium"},
     {"id": "large-v3", "name": "Large V3", "desc": "Beste Qualitaet, langsamer", "vram": "~6 GB", "vram_mb": 6144, "quality": 4, "repo": "Systran/faster-whisper-large-v3"},
-    # German finetunes (primeline / Florian Zimmermeister), pre-converted to CTranslate2:
+    # German finetunes (primeline / Florian Zimmermeister), pre-converted to CTranslate2.
+    # IMPORTANT: these repos must be PUBLIC and non-gated, otherwise the server's
+    # anonymous download gets HTTP 401 and faster-whisper masks it as a confusing
+    # "cached snapshot not found" offline error. Verify model.bin is anon-fetchable
+    # (resolve/main/model.bin -> 200/206, not 401 GatedRepo) before swapping a repo.
     # ponytail: turbo-german has a known bug - it writes a double-s where an eszett belongs
-    # (e.g. "Massstab"). Author-confirmed. Add a post-process fix in transcribe() if it bothers you.
-    {"id": "large-v3-turbo-german", "name": "Large V3 Turbo (Deutsch)", "desc": "Deutsch-optimiert + schnell (Turbo)", "vram": "~3 GB", "vram_mb": 3072, "quality": 5, "repo": "TheChola/whisper-large-v3-turbo-german-faster-whisper"},
-    {"id": "large-v3-german", "name": "Large V3 (Deutsch)", "desc": "Deutsch-optimiert, beste dt. Qualitaet", "vram": "~6 GB", "vram_mb": 6144, "quality": 5, "repo": "Reality-Interface/whisper-large-v3-german-faster-whisper"},
+    # (e.g. "Massstab"). Author-confirmed. The _fix_eszett() post-process handles it.
+    {"id": "large-v3-turbo-german", "name": "Large V3 Turbo (Deutsch)", "desc": "Deutsch-optimiert + schnell (Turbo)", "vram": "~3 GB", "vram_mb": 3072, "quality": 5, "repo": "jimmymeister/whisper-large-v3-turbo-german-ct2"},
+    {"id": "large-v3-german", "name": "Large V3 (Deutsch)", "desc": "Deutsch-optimiert, beste dt. Qualitaet", "vram": "~6 GB", "vram_mb": 6144, "quality": 5, "repo": "GalaktischeGurke/primeline-whisper-large-v3-german-ct2"},
 ], key=lambda m: (m["vram_mb"], m["quality"]))
 
 _MODEL_BY_ID = {m["id"]: m for m in AVAILABLE_WHISPER_MODELS}
