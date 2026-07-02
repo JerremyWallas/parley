@@ -1,3 +1,4 @@
+import copy
 import json
 import logging
 import os
@@ -28,6 +29,22 @@ def _atomic_write_lines(path, lines):
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.writelines(lines)
+        os.replace(tmp_path, path)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def _atomic_write_json(path, obj):
+    """Atomically dump `obj` as JSON to `path` (same crash-safety as above).
+    Caller must hold _file_lock."""
+    fd, tmp_path = tempfile.mkstemp(dir=DATA_DIR, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(obj, f, ensure_ascii=False, indent=2)
         os.replace(tmp_path, path)
     except Exception:
         try:
@@ -103,8 +120,7 @@ def save_glossary(words: list[str]):
     """Save the glossary."""
     _ensure_data_dir()
     with _file_lock:
-        with open(GLOSSARY_FILE, "w", encoding="utf-8") as f:
-            json.dump({"words": words}, f, ensure_ascii=False, indent=2)
+        _atomic_write_json(GLOSSARY_FILE, {"words": words})
 
 
 def add_glossary_word(word: str):
@@ -151,8 +167,7 @@ def update_language_stats(language: str):
         percentages = {lang: round(c / total * 100, 1) for lang, c in counts.items()}
 
         stats = {"counts": counts, "percentages": percentages, "total": total}
-        with open(LANGUAGE_STATS_FILE, "w", encoding="utf-8") as f:
-            json.dump(stats, f, ensure_ascii=False, indent=2)
+        _atomic_write_json(LANGUAGE_STATS_FILE, stats)
 
 
 def get_language_stats() -> dict:
@@ -169,33 +184,35 @@ def get_language_stats() -> dict:
 
 # --- Preferences ---
 
+# In-Memory-Cache: get_preferences() läuft 3-4× pro Transkription — der Disk-Read
+# lohnt sich nur einmal. save_preferences() hält den Cache aktuell; deepcopy
+# verhindert, dass Aufrufer den Cache durch Mutation korrumpieren (prefs sind winzig).
+_prefs_cache: dict | None = None
+
+
 def get_preferences() -> dict:
-    """Get user preferences."""
+    """Get user preferences (cached after the first disk read)."""
+    global _prefs_cache
     with _file_lock:
-        if not PREFERENCES_FILE.exists():
-            return {"default_mode": "raw"}
-        with open(PREFERENCES_FILE, "r", encoding="utf-8") as f:
-            try:
-                return json.load(f)
-            except (json.JSONDecodeError, ValueError):
-                return {"default_mode": "raw"}
+        if _prefs_cache is None:
+            if not PREFERENCES_FILE.exists():
+                _prefs_cache = {"default_mode": "raw"}
+            else:
+                with open(PREFERENCES_FILE, "r", encoding="utf-8") as f:
+                    try:
+                        _prefs_cache = json.load(f)
+                    except (json.JSONDecodeError, ValueError):
+                        _prefs_cache = {"default_mode": "raw"}
+        return copy.deepcopy(_prefs_cache)
 
 
 def save_preferences(prefs: dict):
     """Save user preferences atomically (write to temp file, then rename)."""
+    global _prefs_cache
     _ensure_data_dir()
     with _file_lock:
-        fd, tmp_path = tempfile.mkstemp(dir=DATA_DIR, suffix=".tmp")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(prefs, f, ensure_ascii=False, indent=2)
-            os.replace(tmp_path, PREFERENCES_FILE)
-        except Exception:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
+        _atomic_write_json(PREFERENCES_FILE, prefs)
+        _prefs_cache = copy.deepcopy(prefs)
 
 
 # --- History (server-side, synced across devices) ---

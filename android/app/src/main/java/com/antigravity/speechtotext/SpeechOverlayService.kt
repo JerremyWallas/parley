@@ -168,6 +168,7 @@ class SpeechOverlayService : AccessibilityService() {
             var transcribed = 0
             try {
                 for (item in items) {
+                    if (destroyed) break
                     try {
                         val audioData = item.file.readBytes()
                         val result = ApiClient.transcribeWithRetry(
@@ -199,7 +200,7 @@ class SpeechOverlayService : AccessibilityService() {
             } finally {
                 retryingPending = false
             }
-            if (transcribed > 0) {
+            if (transcribed > 0 && !destroyed) {
                 handler.post {
                     val msg = if (transcribed == 1) {
                         "1 alte Aufnahme nachträglich transkribiert"
@@ -372,7 +373,12 @@ class SpeechOverlayService : AccessibilityService() {
         // The service receives ACTION_START in onStartCommand and starts the AudioRecorder.
         try {
             startForegroundService(
-                Intent(this, RecordingService::class.java).setAction(RecordingService.ACTION_START),
+                Intent(this, RecordingService::class.java)
+                    .setAction(RecordingService.ACTION_START)
+                    .putExtra(
+                        RecordingService.EXTRA_REQUESTED_AT,
+                        android.os.SystemClock.elapsedRealtimeNanos(),
+                    ),
             )
             isRecording = true
             overlayBtn.setBackgroundResource(R.drawable.overlay_bg_recording)
@@ -395,16 +401,11 @@ class SpeechOverlayService : AccessibilityService() {
     private fun stopRecordingAndTranscribe() {
         if (!isRecording) return
         isRecording = false
-
-        val audioData = recordingService?.stopAndGetAudio()
         overlayBtn.setBackgroundResource(R.drawable.overlay_bg)
-        if (audioData == null) {
-            Log.w(TAG, "No audio data — recording service unavailable")
-            return
-        }
 
-        if (audioData.size < 100) {
-            Log.w(TAG, "Audio too short, ignoring")
+        val service = recordingService
+        if (service == null) {
+            Log.w(TAG, "Recording service unavailable")
             return
         }
 
@@ -412,17 +413,33 @@ class SpeechOverlayService : AccessibilityService() {
         val serverUrl = prefs.getString("server_url", "") ?: ""
         val mode = prefs.getString("mode", "raw") ?: "raw"
 
-        if (serverUrl.isBlank()) {
-            Toast.makeText(this, "Server-URL nicht konfiguriert", Toast.LENGTH_SHORT).show()
-            return
-        }
-
         // Show processing indicator
         overlayBtn.alpha = 0.5f
-        Toast.makeText(this, "Verarbeite...", Toast.LENGTH_SHORT).show()
 
         thread {
+            var audioData: ByteArray? = null
             try {
+                // MediaRecorder.stop() + readBytes() are blocking I/O — keep them
+                // off the accessibility main thread.
+                audioData = service.stopAndGetAudio()
+                if (audioData == null) {
+                    Log.w(TAG, "No audio data — recording never started or failed")
+                    return@thread
+                }
+                if (audioData.size < 100) {
+                    Log.w(TAG, "Audio too short, ignoring")
+                    return@thread
+                }
+                if (serverUrl.isBlank()) {
+                    handler.post {
+                        Toast.makeText(this, "Server-URL nicht konfiguriert", Toast.LENGTH_SHORT).show()
+                    }
+                    return@thread
+                }
+                handler.post {
+                    Toast.makeText(this, "Verarbeite...", Toast.LENGTH_SHORT).show()
+                }
+
                 val result = ApiClient.transcribeWithRetry(
                     serverUrl = serverUrl,
                     audioData = audioData,
@@ -493,7 +510,7 @@ class SpeechOverlayService : AccessibilityService() {
                     }
                 } else {
                     Log.e(TAG, "Transcription failed, queueing for retry", e)
-                    val queued = PendingQueue.enqueue(this, audioData, mode)
+                    val queued = audioData?.let { PendingQueue.enqueue(this, it, mode) } == true
                     overlayBtn.post {
                         val msg = if (queued) {
                             "Aufnahme gespeichert, wird später hochgeladen"
@@ -639,16 +656,8 @@ class SpeechOverlayService : AccessibilityService() {
     }
 
     private fun findFocusedEditText(node: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
-        if (node == null) return null
-
-        if (node.isFocused && node.isEditable) return node
-
-        for (i in 0 until node.childCount) {
-            val child = node.getChild(i) ?: continue
-            val result = findFocusedEditText(child)
-            if (result != null) return result
-        }
-        return null
+        val focused = node?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) ?: return null
+        return if (focused.isEditable) focused else null
     }
 
     override fun onInterrupt() {

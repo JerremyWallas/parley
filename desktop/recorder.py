@@ -30,7 +30,7 @@ if sys.platform == "win32":
 
 
 class AudioRecorder:
-    """Records audio from the default microphone with optional chunk streaming."""
+    """Records audio from the default microphone."""
 
     def __init__(self, sample_rate: int = 16000, channels: int = 1):
         self.sample_rate = sample_rate
@@ -39,20 +39,12 @@ class AudioRecorder:
         self._stream = None
         self._recording = False
         self._lock = threading.Lock()
-        self._on_chunk = None
-        self._chunk_frames: collections.deque[np.ndarray] = collections.deque()
-        self._chunk_size = 0  # frames per chunk (0 = no chunking)
 
-    def start(self, on_chunk=None, chunk_interval_ms: int = 500):
-        """Start recording. If on_chunk is provided, calls it with raw PCM bytes every chunk_interval_ms."""
-        import time
-
+    def start(self):
+        """Start recording."""
         with self._lock:
             self._frames = collections.deque()
-            self._chunk_frames = collections.deque()
             self._recording = True
-            self._on_chunk = on_chunk
-            self._chunk_size = int(self.sample_rate * chunk_interval_ms / 1000) if on_chunk else 0
 
             # Try APIs in order: WASAPI shared (best) → DirectSound → MME (fallback)
             attempts = []
@@ -83,8 +75,24 @@ class AudioRecorder:
             logger.error("Could not access microphone on any API")
             self._recording = False
 
-    def stop(self) -> bytes:
-        """Stop recording and return audio as Ogg/Opus bytes.
+    def stop_frames(self) -> list:
+        """Stop the mic stream and hand back the captured frames.
+
+        Fast (no encoding) — safe to call on the hotkey thread. Encode the
+        frames afterwards on a worker thread via encode_opus().
+        """
+        with self._lock:
+            self._recording = False
+            if self._stream:
+                self._stream.stop()
+                self._stream.close()
+                self._stream = None
+            frames = list(self._frames)
+            self._frames.clear()  # don't keep the last recording resident
+        return frames
+
+    def encode_opus(self, frames: list) -> bytes:
+        """Encode captured frames to Ogg/Opus bytes.
 
         Opus VBR @ 24 kbps shrinks a 10s recording from ~320 KB (WAV) to ~30 KB
         — roughly a 10× reduction. The server (server/main.py) accepts Ogg/Opus
@@ -92,60 +100,18 @@ class AudioRecorder:
 
         Returns empty bytes if no audio was captured.
         """
-        with self._lock:
-            self._recording = False
-            if self._stream:
-                self._stream.stop()
-                self._stream.close()
-                self._stream = None
-
-            # Send any remaining chunk frames as raw PCM
-            if self._on_chunk and self._chunk_frames:
-                pcm = np.concatenate(list(self._chunk_frames), axis=0).tobytes()
-                self._on_chunk(pcm)
-                self._chunk_frames = collections.deque()
-
-            self._on_chunk = None
-            frames = list(self._frames)
-
         if not frames:
             return b""
-
         return self._frames_to_opus(frames)
 
-    def stop_wav(self) -> bytes:
-        """Stop recording and return audio as WAV bytes.
-
-        Kept for callers that need a lossless local copy (e.g. local fallbacks
-        or debugging dumps). Production code paths should use stop().
-        """
-        with self._lock:
-            self._recording = False
-            if self._stream:
-                self._stream.stop()
-                self._stream.close()
-                self._stream = None
-            self._on_chunk = None
-            frames = list(self._frames)
-
-        if not frames:
-            return b""
-        return self._frames_to_wav(frames)
+    def stop(self) -> bytes:
+        """Stop recording and return audio as Ogg/Opus bytes (blocking encode)."""
+        return self.encode_opus(self.stop_frames())
 
     def _callback(self, indata, frames, time, status):
         if not self._recording:
             return
-        frame = indata.copy()
-        self._frames.append(frame)
-
-        # Chunked streaming — send raw PCM bytes (no WAV header)
-        if self._on_chunk and self._chunk_size > 0:
-            self._chunk_frames.append(frame)
-            total_samples = sum(f.shape[0] for f in self._chunk_frames)
-            if total_samples >= self._chunk_size:
-                pcm = np.concatenate(list(self._chunk_frames), axis=0).tobytes()
-                self._chunk_frames = collections.deque()
-                self._on_chunk(pcm)
+        self._frames.append(indata.copy())
 
     def _frames_to_wav(self, frames: list[np.ndarray]) -> bytes:
         audio_data = np.concatenate(frames, axis=0)
@@ -186,12 +152,6 @@ class AudioRecorder:
         except Exception as e:
             logger.warning(f"Opus encoding failed ({e}); falling back to WAV")
             return self._frames_to_wav(frames)
-
-    def record_for(self, seconds: float) -> bytes:
-        """Record for a fixed duration and return audio bytes."""
-        self.start()
-        threading.Event().wait(seconds)
-        return self.stop()
 
     @property
     def is_recording(self) -> bool:

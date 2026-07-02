@@ -123,12 +123,12 @@ document.querySelectorAll(".tab-btn").forEach(btn => {
 });
 
 // --- WebSocket streaming ---
+let _opusMimeType = null; // Browser-Support ändert sich nicht — einmal ermitteln reicht
 function getOpusMimeType() {
+  if (_opusMimeType) return _opusMimeType;
   const types = ["audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus", "audio/mp4"];
-  for (const type of types) {
-    if (MediaRecorder.isTypeSupported(type)) return type;
-  }
-  return "audio/webm";
+  _opusMimeType = types.find(t => MediaRecorder.isTypeSupported(t)) || "audio/webm";
+  return _opusMimeType;
 }
 
 async function startRecording() {
@@ -311,22 +311,6 @@ function showFinalResult(rawText, processedText, language, durationMs) {
     mode: currentMode,
     language: language || "",
   });
-}
-
-async function sendAudioRest(blob) {
-  try {
-    const formData = new FormData();
-    formData.append("audio", blob, "recording.webm");
-    formData.append("mode", currentMode);
-    const result = await apiPost("/api/transcribe", { body: formData });
-    showFinalResult(result.raw_text, result.processed_text || result.raw_text, result.language, result.duration_ms);
-  } catch (err) {
-    statusEl.textContent = "Fehler: " + err.message;
-    if (_pendingAudioBlob) retryBtn.classList.remove("hidden");
-  } finally {
-    recordBtn.classList.remove("processing");
-    recordBtn.querySelector(".label").textContent = "Halten zum Sprechen";
-  }
 }
 
 async function sendAudioRestWithRetry(blob, maxRetries = 3) {
@@ -574,12 +558,16 @@ recordBtn.addEventListener("contextmenu", (e) => e.preventDefault());
 retryBtn.addEventListener("click", () => retryTranscription());
 
 // --- Waveform visualizer ---
+let _waveformData = null; // wiederverwendet statt 60 Allokationen/s im rAF-Loop
 function drawWaveform() {
   if (!analyser) return;
   animationFrame = requestAnimationFrame(drawWaveform);
 
   const bufferLength = analyser.frequencyBinCount;
-  const dataArray = new Uint8Array(bufferLength);
+  if (!_waveformData || _waveformData.length !== bufferLength) {
+    _waveformData = new Uint8Array(bufferLength);
+  }
+  const dataArray = _waveformData;
   analyser.getByteFrequencyData(dataArray);
 
   const width = canvas.width;

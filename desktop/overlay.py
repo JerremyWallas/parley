@@ -13,6 +13,7 @@ class RecordingOverlay:
         self._thread = None
         self._running = False
         self._state = "hidden"  # hidden, recording, processing, listening, retrying, notification
+        self._animating = False  # True while the after()-loop is scheduled (Tk-thread only)
         self._animation_step = 0
         self._notification_text = ""
         self._notification_timer = None
@@ -90,12 +91,16 @@ class RecordingOverlay:
 
     def _animate(self):
         if not self._running or not self._root:
+            self._animating = False
             return
 
         if self._state == "hidden":
-            self._root.after(100, self._animate)
+            # Parken statt weitertickern — unsichtbar 10 FPS zu rendern ist
+            # reine CPU-Verschwendung. _update_visuals() wirft den Loop wieder an.
+            self._animating = False
             return
 
+        self._animating = True
         self._canvas.delete("all")
 
         if self._state == "notification":
@@ -224,6 +229,7 @@ class RecordingOverlay:
         if self._canvas:
             self._canvas.config(width=width, height=height)
         self._root.deiconify()
+        self._update_visuals()  # rearm the parked animation loop
         # Schedule auto-hide
         self._notification_timer = self._root.after(duration_ms, self._end_notification)
 
@@ -245,7 +251,10 @@ class RecordingOverlay:
                 self._canvas.config(width=size, height=size)
 
     def _update_visuals(self):
-        pass  # Animation loop handles it
+        # Runs on the Tk thread (via root.after). Rearm the animation loop if
+        # it parked itself while the overlay was hidden.
+        if not self._animating:
+            self._animate()
 
     def destroy(self):
         self._running = False

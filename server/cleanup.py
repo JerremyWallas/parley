@@ -7,6 +7,26 @@ import personalization
 
 logger = logging.getLogger(__name__)
 
+# Geteilter Client statt Client-pro-Request: hält Keep-Alive-Connections zu
+# Ollama offen. Timeouts werden pro Request gesetzt. Lazy erzeugt, damit
+# Imports (z. B. in Tests) keinen Client anlegen; main.py schließt ihn im
+# lifespan-Shutdown via close_http_client().
+_http: httpx.AsyncClient | None = None
+
+
+def get_http_client() -> httpx.AsyncClient:
+    global _http
+    if _http is None:
+        _http = httpx.AsyncClient()
+    return _http
+
+
+async def close_http_client():
+    global _http
+    if _http is not None:
+        await _http.aclose()
+        _http = None
+
 
 def _get_active_model() -> str:
     """Get the active model from preferences, falling back to config default."""
@@ -71,27 +91,27 @@ async def process_text(
     prompt = _build_prompt(preset_id, raw_text, few_shot_examples)
 
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            active_model = _get_active_model()
-            response = await client.post(
-                f"{OLLAMA_URL}/api/generate",
-                json={
-                    "model": active_model,
-                    "prompt": prompt,
-                    "stream": False,
-                    "options": {
-                        "temperature": 0.3,
-                        "top_p": 0.9,
-                    },
+        active_model = _get_active_model()
+        response = await get_http_client().post(
+            f"{OLLAMA_URL}/api/generate",
+            json={
+                "model": active_model,
+                "prompt": prompt,
+                "stream": False,
+                "options": {
+                    "temperature": 0.3,
+                    "top_p": 0.9,
                 },
-            )
-            response.raise_for_status()
-            result = response.json()
-            processed = result.get("response", raw_text).strip()
-            # Remove surrounding quotes if the model wrapped the response
-            if len(processed) >= 2 and processed[0] == '"' and processed[-1] == '"':
-                processed = processed[1:-1]
-            return processed
+            },
+            timeout=60.0,
+        )
+        response.raise_for_status()
+        result = response.json()
+        processed = result.get("response", raw_text).strip()
+        # Remove surrounding quotes if the model wrapped the response
+        if len(processed) >= 2 and processed[0] == '"' and processed[-1] == '"':
+            processed = processed[1:-1]
+        return processed
     except Exception as e:
         logger.error(f"Ollama processing failed: {e}")
         return raw_text
@@ -111,30 +131,30 @@ async def process_text_streaming(
 
     try:
         active_model = _get_active_model()
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            async with client.stream(
-                "POST",
-                f"{OLLAMA_URL}/api/generate",
-                json={
-                    "model": active_model,
-                    "prompt": prompt,
-                    "stream": True,
-                    "options": {
-                        "temperature": 0.3,
-                        "top_p": 0.9,
-                    },
+        async with get_http_client().stream(
+            "POST",
+            f"{OLLAMA_URL}/api/generate",
+            json={
+                "model": active_model,
+                "prompt": prompt,
+                "stream": True,
+                "options": {
+                    "temperature": 0.3,
+                    "top_p": 0.9,
                 },
-            ) as response:
-                response.raise_for_status()
-                async for line in response.aiter_lines():
-                    if not line:
-                        continue
-                    data = json.loads(line)
-                    token = data.get("response", "")
-                    if token:
-                        yield token
-                    if data.get("done", False):
-                        break
+            },
+            timeout=120.0,
+        ) as response:
+            response.raise_for_status()
+            async for line in response.aiter_lines():
+                if not line:
+                    continue
+                data = json.loads(line)
+                token = data.get("response", "")
+                if token:
+                    yield token
+                if data.get("done", False):
+                    break
     except Exception as e:
         logger.error(f"Ollama streaming failed: {e}")
         yield raw_text
@@ -143,11 +163,10 @@ async def process_text_streaming(
 async def check_ollama() -> dict:
     """Check if Ollama is reachable and model is available."""
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(f"{OLLAMA_URL}/api/tags")
-            resp.raise_for_status()
-            tags = resp.json()
-            models = [m["name"] for m in tags.get("models", [])]
-            return {"status": "ok", "models": models, "configured_model": OLLAMA_MODEL}
+        resp = await get_http_client().get(f"{OLLAMA_URL}/api/tags", timeout=5.0)
+        resp.raise_for_status()
+        tags = resp.json()
+        models = [m["name"] for m in tags.get("models", [])]
+        return {"status": "ok", "models": models, "configured_model": OLLAMA_MODEL}
     except Exception as e:
         return {"status": "error", "error": str(e)}

@@ -3,6 +3,7 @@ import json
 import ssl
 import logging
 import threading
+import time
 import websocket
 import httpx
 
@@ -10,9 +11,13 @@ logger = logging.getLogger(__name__)
 
 # SECURITY: SSL-Verifikation ist deaktiviert, da der Heimserver Self-Signed Certs nutzt.
 # Fuer den Einsatz mit richtigen Zertifikaten: verify=True / ssl defaults setzen.
-_ssl_context = ssl.create_default_context()
-_ssl_context.check_hostname = False
-_ssl_context.verify_mode = ssl.CERT_NONE
+#
+# Ein geteilter Client statt Client-pro-Request: spart den TLS-Handshake bei
+# jedem Retry-Versuch. Timeouts siehe transcribe()-Docstring.
+_http = httpx.Client(
+    timeout=httpx.Timeout(connect=30.0, read=180.0, write=240.0, pool=10.0),
+    verify=False,
+)
 
 
 def _ws_url(server_url: str, path: str) -> str:
@@ -70,13 +75,18 @@ class StreamingSession:
             daemon=True,
         )
         self._thread.start()
-        # Wait for connection with proper timeout
-        if not self._connected.wait(timeout=3.0):
-            logger.warning("WebSocket connection timed out")
+        # Deliberately no wait here: start() runs on the hotkey thread and the
+        # recording must begin immediately. send_audio() waits for the handshake.
 
     def send_audio(self, audio_bytes: bytes):
         """Send audio chunk to server. Format depends on what the recorder produces
-        (Ogg/Opus by default, WAV in fallback mode); the server detects via magic bytes."""
+        (Ogg/Opus by default, WAV in fallback mode); the server detects via magic bytes.
+
+        Blocks up to 3s for the WS handshake — callers run on a worker thread.
+        If the connection never comes up, the send is skipped and the caller's
+        REST-retry path recovers via the persisted pending audio."""
+        if not self._connected.wait(timeout=3.0):
+            logger.warning("WebSocket connection timed out")
         if self._ws and self._ws.sock and self._ws.sock.connected:
             try:
                 self._ws.send(audio_bytes, opcode=websocket.ABNF.OPCODE_BINARY)
@@ -169,15 +179,13 @@ def transcribe(server_url: str, audio_bytes: bytes, mode: str = "raw",
     """
     url = f"{server_url.rstrip('/')}/api/transcribe"
 
-    timeout = httpx.Timeout(connect=30.0, read=180.0, write=240.0, pool=10.0)
-    with httpx.Client(timeout=timeout, verify=False) as client:
-        response = client.post(
-            url,
-            files={"audio": (filename, audio_bytes, content_type)},
-            data={"mode": mode},
-        )
-        response.raise_for_status()
-        return response.json()
+    response = _http.post(
+        url,
+        files={"audio": (filename, audio_bytes, content_type)},
+        data={"mode": mode},
+    )
+    response.raise_for_status()
+    return response.json()
 
 
 def transcribe_with_retry(server_url: str, audio_bytes: bytes, mode: str = "raw",
@@ -191,8 +199,6 @@ def transcribe_with_retry(server_url: str, audio_bytes: bytes, mode: str = "raw"
     Raises:
         Last exception if all retries exhausted, or immediately on 4xx errors.
     """
-    import time
-
     backoff = [2, 4, 8]
     last_error = None
 

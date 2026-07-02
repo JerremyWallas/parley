@@ -146,7 +146,6 @@ def _refresh_tray_icon():
 
 def _server_health_loop():
     """Periodically check server connection in background."""
-    import time
     while True:
         _check_server_connection()
         time.sleep(30)
@@ -186,16 +185,6 @@ def _set_active_preset(preset_id: str):
         # Still update locally even if server call fails
         _active_preset_id = preset_id
         cfg["mode"] = preset_id
-
-
-def _get_active_preset_name() -> str:
-    """Get the display name of the currently active preset."""
-    if _active_preset_id == "raw":
-        return "Raw"
-    for p in _cached_presets:
-        if p.get("id") == _active_preset_id:
-            return p.get("name", _active_preset_id)
-    return _active_preset_id
 
 
 def _get_preset_name(preset_id: str) -> str:
@@ -238,6 +227,10 @@ def _start_recording():
     """Start a new streaming recording session."""
     global _streaming_session
     logger.info("Starting streaming recording")
+
+    # Mic first — the WS connect happens in the background (send_audio waits
+    # for the handshake later), so no spoken words are lost to a slow server.
+    audio_rec.start()
     update_icon(recording=True)
 
     _streaming_session = api_client.StreamingSession(
@@ -249,37 +242,53 @@ def _start_recording():
         on_error=_on_error,
     )
     _streaming_session.start()
-    audio_rec.start()
 
 
 def _stop_recording():
-    """Stop recording and send audio for processing."""
-    global _streaming_session, _active_mode
+    """Stop recording and hand off processing to a worker thread."""
+    global _active_mode
     _active_mode = None
     logger.info("Stopping recording — sending audio via WebSocket")
-    audio_bytes = audio_rec.stop()
+    frames = audio_rec.stop_frames()  # fast: just closes the mic stream
+    session = _streaming_session  # capture on the hotkey thread
     update_icon(processing=True)
+    # Opus-Encode, Disk-Write und WS-Send dauern proportional zur Aufnahme —
+    # nicht auf dem pynput-Listener-Thread blockieren, sonst hängen Hotkeys.
+    threading.Thread(target=_send_stopped_recording, args=(frames, session), daemon=True).start()
 
-    if _streaming_session and audio_bytes:
+
+def _send_stopped_recording(frames, session):
+    """Encode and send a stopped recording (runs on a worker thread)."""
+    global _streaming_session
+    audio_bytes = audio_rec.encode_opus(frames)
+
+    # Nur senden, wenn die Session noch die aktuelle ist — ein WS-Fehler setzt
+    # das Global auf None, eine schon neu gestartete Aufnahme ersetzt es. In
+    # beiden Fällen darf das alte Audio nicht über diese Session laufen.
+    session_alive = session is not None and _streaming_session is session
+
+    if session_alive and audio_bytes:
         # Save audio BEFORE sending so it survives network failures
         _save_pending_audio(audio_bytes, _active_preset_id)
-        _streaming_session.send_audio(audio_bytes)
-        _streaming_session.finish()
+        session.send_audio(audio_bytes)
+        session.finish()
     elif audio_bytes:
         # The WS session was already torn down (a WS error fired on the socket
         # thread before the hotkey was released, or it never connected). Don't
         # drop the recording or leave the icon stuck on "processing" — persist
         # the audio and recover it via the REST retry path.
-        if _streaming_session:
-            _streaming_session.close()
-            _streaming_session = None
+        if session is not None:
+            session.close()
+            if _streaming_session is session:
+                _streaming_session = None
         _save_pending_audio(audio_bytes, _active_preset_id)
-        threading.Thread(target=_auto_retry, args=(audio_bytes, _active_preset_id), daemon=True).start()
+        _auto_retry(audio_bytes, _active_preset_id)
     else:
         # No audio captured — just make sure the UI recovers.
-        if _streaming_session:
-            _streaming_session.close()
-            _streaming_session = None
+        if session is not None:
+            session.close()
+            if _streaming_session is session:
+                _streaming_session = None
         update_icon()
 
 
@@ -443,8 +452,6 @@ def _auto_retry(audio_bytes: bytes, mode: str):
 def _show_error_popup(message: str):
     """Show a Windows notification popup for errors."""
     try:
-        import threading
-
         def _show():
             from tkinter import messagebox
             if not tk._default_root:
@@ -517,10 +524,6 @@ def _voice_send_listen(max_seconds: float, triggers: list[str]) -> bool:
     """
     import numpy as np
     import sounddevice as sd
-    import io
-    import wave
-    import time
-    import threading
 
     sample_rate = 16000
     block_size = 1600  # 100ms blocks (16000 * 0.1)
@@ -529,7 +532,6 @@ def _voice_send_listen(max_seconds: float, triggers: list[str]) -> bool:
     silence_blocks_needed = 12  # 1.2 seconds of silence after speech
     min_speech_blocks = 5  # At least 0.5s of speech
 
-    all_blocks = []
     speech_blocks = []
     silent_count = 0
     is_speaking = False
@@ -541,7 +543,6 @@ def _voice_send_listen(max_seconds: float, triggers: list[str]) -> bool:
         block = indata.copy()
 
         with lock:
-            all_blocks.append(block)
             rms = np.sqrt(np.mean(block.astype(np.float32) ** 2))
 
             if rms > silence_threshold:

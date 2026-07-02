@@ -63,24 +63,6 @@ object ApiClient {
             .build()
     }
 
-    data class Preset(val id: String, val name: String)
-
-    fun fetchPresets(serverUrl: String): List<Preset> {
-        val url = "${serverUrl.trimEnd('/')}/api/presets"
-        val request = Request.Builder().url(url).get().build()
-        client.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) return emptyList()
-            val json = JSONObject(response.body!!.string())
-            val presets = mutableListOf<Preset>()
-            val arr = json.optJSONArray("presets") ?: return emptyList()
-            for (i in 0 until arr.length()) {
-                val p = arr.getJSONObject(i)
-                presets.add(Preset(p.optString("id", ""), p.optString("name", "")))
-            }
-            return presets
-        }
-    }
-
     /**
      * Fire-and-forget request to /api/health. Wird beim Overlay-Show
      * ausgelöst, damit der TLS-Tunnel steht, bevor der User auf Record drückt.
@@ -96,14 +78,6 @@ object ApiClient {
                 client.newCall(request).execute().close()
             } catch (_: Exception) { /* prewarm best-effort */ }
         }.apply { isDaemon = true }.start()
-    }
-
-    fun setActivePreset(serverUrl: String, presetId: String) {
-        val url = "${serverUrl.trimEnd('/')}/api/presets/active"
-        val body = JSONObject().put("id", presetId).toString()
-            .toRequestBody("application/json".toMediaType())
-        val request = Request.Builder().url(url).put(body).build()
-        client.newCall(request).execute().close()
     }
 
     fun saveHistory(
@@ -156,7 +130,9 @@ object ApiClient {
             if (!response.isSuccessful) {
                 throw HttpStatusException(response.code, "API error: ${response.code}")
             }
-            val json = JSONObject(response.body!!.string())
+            val json = JSONObject(
+                response.body?.string() ?: throw IOException("Empty response body"),
+            )
             return TranscriptionResult(
                 rawText = json.optString("raw_text", ""),
                 processedText = json.optString("processed_text", ""),

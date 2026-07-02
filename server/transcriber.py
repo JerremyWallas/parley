@@ -14,6 +14,9 @@ logger = logging.getLogger(__name__)
 _model: WhisperModel | None = None
 # Serializes cache-dir mutations so a delete can't race an in-progress download.
 _cache_lock = threading.Lock()
+# Guards _model load/unload — two parallel first requests would otherwise both
+# load the (VRAM-heavy) model.
+_model_lock = threading.Lock()
 
 # Available Whisper models sorted by VRAM requirement, then quality.
 # "repo" is the HF id passed to faster-whisper (and used to derive the cache dir);
@@ -88,8 +91,9 @@ def _detect_compute_type() -> str:
 def set_model(model_name: str) -> None:
     """Unload current model and set the new model name for next load."""
     global _model
-    config.WHISPER_MODEL = model_name
-    _model = None
+    with _model_lock:
+        config.WHISPER_MODEL = model_name
+        _model = None
     logger.info(f"Whisper model switched to '{model_name}' (will load on next transcription)")
 
 
@@ -132,21 +136,25 @@ def list_models(gpu_total_mb: int = 0) -> list[dict]:
 
 def get_model() -> WhisperModel:
     global _model
-    if _model is None:
-        import personalization
-        prefs = personalization.get_preferences()
-        model_name = prefs.get("whisper_model", WHISPER_MODEL)
+    model = _model
+    if model is not None:
+        return model
+    with _model_lock:
+        if _model is None:
+            import personalization
+            prefs = personalization.get_preferences()
+            model_name = prefs.get("whisper_model", WHISPER_MODEL)
 
-        compute_type = _detect_compute_type()
-        logger.info(f"Loading Whisper model '{model_name}' on {WHISPER_DEVICE} ({compute_type})...")
-        _model = WhisperModel(
-            _repo_for(model_name),
-            device=WHISPER_DEVICE,
-            compute_type=compute_type,
-            download_root=str(MODEL_DIR),
-        )
-        logger.info("Whisper model loaded.")
-    return _model
+            compute_type = _detect_compute_type()
+            logger.info(f"Loading Whisper model '{model_name}' on {WHISPER_DEVICE} ({compute_type})...")
+            _model = WhisperModel(
+                _repo_for(model_name),
+                device=WHISPER_DEVICE,
+                compute_type=compute_type,
+                download_root=str(MODEL_DIR),
+            )
+            logger.info("Whisper model loaded.")
+        return _model
 
 
 def _get_language() -> str | None:

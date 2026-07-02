@@ -25,6 +25,7 @@ class RecordingService : Service() {
     companion object {
         private const val TAG = "RecordingService"
         const val ACTION_START = "com.antigravity.speechtotext.action.START_RECORDING"
+        const val EXTRA_REQUESTED_AT = "requested_at_nanos"
         private const val NOTIFICATION_ID = 1001
         private const val CHANNEL_ID = "parley_recording"
     }
@@ -36,6 +37,11 @@ class RecordingService : Service() {
     // explicit and cheap insurance against a future async call site.
     @Volatile private var recorder: AudioRecorder? = null
     private var foregroundActive = false
+    // startForegroundService(ACTION_START) is async but stopAndGetAudio() is a sync
+    // binder call — a fast tap can stop *before* the queued start is delivered, which
+    // would then spawn an orphan recording with the mic held open. Each start intent
+    // carries its request timestamp; a start older than the latest stop is dropped.
+    @Volatile private var lastStopNanos = 0L
 
     inner class LocalBinder : Binder() {
         fun getService(): RecordingService = this@RecordingService
@@ -50,14 +56,23 @@ class RecordingService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_START) {
+            // Must always promote first — startForegroundService requires a
+            // startForeground call within 5s, even if we abort right after.
             promoteToForeground()
-            startCapture()
+            val requestedAt = intent.getLongExtra(EXTRA_REQUESTED_AT, Long.MAX_VALUE)
+            if (requestedAt <= lastStopNanos) {
+                Log.w(TAG, "Start delivered after its stop — dropping stale recording start")
+                demoteForeground()
+            } else {
+                startCapture()
+            }
         }
         return START_NOT_STICKY
     }
 
     /** Called via binder by SpeechOverlayService when the user releases / taps to stop. */
     fun stopAndGetAudio(): ByteArray? {
+        lastStopNanos = android.os.SystemClock.elapsedRealtimeNanos()
         val data = try {
             recorder?.stop()
         } catch (e: Exception) {
@@ -71,6 +86,7 @@ class RecordingService : Service() {
 
     /** Called via binder when the user cancels (drag, swipe-away). */
     fun cancel() {
+        lastStopNanos = android.os.SystemClock.elapsedRealtimeNanos()
         try {
             recorder?.stop()
         } catch (e: Exception) {

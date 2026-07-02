@@ -31,7 +31,14 @@ object PendingQueue {
     fun enqueue(context: Context, audioData: ByteArray, mode: String): Boolean {
         return try {
             val safeMode = mode.replace(Regex("[^a-zA-Z0-9_-]"), "_").ifBlank { "raw" }
-            val file = File(dir(context), "pending_${System.currentTimeMillis()}_$safeMode.ogg")
+            // Zwei Enqueues in derselben Millisekunde dürfen sich nicht überschreiben —
+            // Timestamp hochzählen statt Format ändern (hält Parser + FIFO intakt).
+            var ts = System.currentTimeMillis()
+            var file = File(dir(context), "pending_${ts}_$safeMode.ogg")
+            while (file.exists()) {
+                ts++
+                file = File(dir(context), "pending_${ts}_$safeMode.ogg")
+            }
             file.writeBytes(audioData)
             Log.i(TAG, "Enqueued ${audioData.size} bytes → ${file.name}")
             true

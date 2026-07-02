@@ -1,8 +1,9 @@
 import asyncio
+import io
 import json
 import logging
+import wave
 from contextlib import asynccontextmanager
-import httpx
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -25,6 +26,7 @@ async def lifespan(app: FastAPI):
     transcriber.get_model()
     logger.info("Server ready.")
     yield
+    await cleanup.close_http_client()
 
 
 app = FastAPI(title="Parley API", version="1.0.0", lifespan=lifespan)
@@ -72,7 +74,7 @@ def _get_gpu_info() -> dict:
 
 async def _get_gpu_info_async() -> dict:
     """Async wrapper: run the blocking nvidia-smi probe off the event loop."""
-    return await asyncio.get_event_loop().run_in_executor(None, _get_gpu_info)
+    return await asyncio.get_running_loop().run_in_executor(None, _get_gpu_info)
 
 
 @app.get("/api/health")
@@ -118,7 +120,7 @@ async def transcribe_audio(
     initial_prompt = personalization.build_initial_prompt()
 
     # Transcribe — offload the blocking CTranslate2 inference off the event loop
-    result = await asyncio.get_event_loop().run_in_executor(
+    result = await asyncio.get_running_loop().run_in_executor(
         None, lambda: transcriber.transcribe(audio_bytes, initial_prompt=initial_prompt)
     )
     raw_text = result["raw_text"]
@@ -314,11 +316,10 @@ async def get_models():
     # Check which models are actually pulled in Ollama
     installed = []
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(f"{config.OLLAMA_URL}/api/tags")
-            resp.raise_for_status()
-            tags = resp.json()
-            installed = [m["name"] for m in tags.get("models", [])]
+        resp = await cleanup.get_http_client().get(f"{config.OLLAMA_URL}/api/tags", timeout=5.0)
+        resp.raise_for_status()
+        tags = resp.json()
+        installed = [m["name"] for m in tags.get("models", [])]
     except Exception:
         pass
 
@@ -356,31 +357,31 @@ async def pull_model(data: dict):
 
     async def stream_progress():
         try:
-            async with httpx.AsyncClient(timeout=None) as client:
-                async with client.stream(
-                    "POST",
-                    f"{config.OLLAMA_URL}/api/pull",
-                    json={"model": model_id, "stream": True},
-                ) as response:
-                    async for line in response.aiter_lines():
-                        if not line:
-                            continue
-                        progress = json.loads(line)
-                        status = progress.get("status", "")
-                        total = progress.get("total", 0)
-                        completed = progress.get("completed", 0)
-                        pct = round(completed / total * 100, 1) if total > 0 else 0
+            async with cleanup.get_http_client().stream(
+                "POST",
+                f"{config.OLLAMA_URL}/api/pull",
+                json={"model": model_id, "stream": True},
+                timeout=None,  # Model-Pulls können viele Minuten dauern
+            ) as response:
+                async for line in response.aiter_lines():
+                    if not line:
+                        continue
+                    progress = json.loads(line)
+                    status = progress.get("status", "")
+                    total = progress.get("total", 0)
+                    completed = progress.get("completed", 0)
+                    pct = round(completed / total * 100, 1) if total > 0 else 0
 
-                        event = json.dumps({
-                            "status": status,
-                            "percent": pct,
-                            "completed": completed,
-                            "total": total,
-                        })
-                        yield f"data: {event}\n\n"
+                    event = json.dumps({
+                        "status": status,
+                        "percent": pct,
+                        "completed": completed,
+                        "total": total,
+                    })
+                    yield f"data: {event}\n\n"
 
-                        if status == "success":
-                            break
+                    if status == "success":
+                        break
         except Exception as e:
             yield f"data: {json.dumps({'status': 'error', 'message': str(e)})}\n\n"
 
@@ -401,12 +402,14 @@ async def delete_model(data: dict):
         raise HTTPException(400, "Cannot delete the active model. Switch to another model first.")
 
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.delete(
-                f"{config.OLLAMA_URL}/api/delete",
-                json={"model": model_id},
-            )
-            resp.raise_for_status()
+        # httpx erlaubt kein json= bei .delete() — request() mit Methode DELETE
+        resp = await cleanup.get_http_client().request(
+            "DELETE",
+            f"{config.OLLAMA_URL}/api/delete",
+            json={"model": model_id},
+            timeout=30.0,
+        )
+        resp.raise_for_status()
     except Exception as e:
         raise HTTPException(500, f"Failed to delete model: {e}")
 
@@ -450,7 +453,6 @@ async def set_whisper_model(data: dict):
 @app.post("/api/whisper-models/pull")
 async def pull_whisper_model(data: dict):
     """Download a Whisper model with SSE status updates."""
-    import asyncio
     model_id = data.get("model", "").strip()
     if not model_id:
         raise HTTPException(400, "Field 'model' is required.")
@@ -458,7 +460,7 @@ async def pull_whisper_model(data: dict):
     async def stream_progress():
         yield f"data: {json.dumps({'status': 'downloading', 'message': f'Downloading {model_id}...'})}\n\n"
         try:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             await loop.run_in_executor(None, transcriber.download_model, model_id)
             yield f"data: {json.dumps({'status': 'success', 'message': f'Model {model_id} ready'})}\n\n"
         except Exception as e:
@@ -564,11 +566,9 @@ async def ws_transcribe(ws: WebSocket):
                     audio_bytes = raw_audio
                 else:
                     # Raw PCM — wrap in WAV container
-                    import io as _io
-                    import wave as _wave
                     sample_rate = data.get("sample_rate", 16000)
-                    buf = _io.BytesIO()
-                    with _wave.open(buf, "wb") as wf:
+                    buf = io.BytesIO()
+                    with wave.open(buf, "wb") as wf:
                         wf.setnchannels(1)
                         wf.setsampwidth(2)
                         wf.setframerate(sample_rate)
