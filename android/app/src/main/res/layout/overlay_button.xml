@@ -9,7 +9,7 @@
         android:layout_height="56dp"
         android:src="@drawable/ic_bubble_white"
         android:background="@drawable/overlay_bg"
-        android:padding="12dp"
+        android:padding="10dp"
         android:elevation="8dp"
         android:contentDescription="Parley" />
 </FrameLayout>

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="64dp"
+    android:height="64dp"
+    android:viewportWidth="64"
+    android:viewportHeight="64">
+
+    <!-- Stop-Quadrat (abgerundet) für den Recording-Zustand -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M26,20 L38,20 Q44,20 44,26 L44,38 Q44,44 38,44 L26,44 Q20,44 20,38 L20,26 Q20,20 26,20 Z" />
+</vector>

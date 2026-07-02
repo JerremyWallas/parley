@@ -382,6 +382,7 @@ class SpeechOverlayService : AccessibilityService() {
             )
             isRecording = true
             overlayBtn.setBackgroundResource(R.drawable.overlay_bg_recording)
+            overlayBtn.setImageResource(R.drawable.ic_stop_white)
             Log.i(TAG, "Recording started")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start recording", e)
@@ -394,6 +395,7 @@ class SpeechOverlayService : AccessibilityService() {
             recordingService?.cancel()
             isRecording = false
             overlayBtn.setBackgroundResource(R.drawable.overlay_bg)
+            overlayBtn.setImageResource(R.drawable.ic_bubble_white)
             Log.i(TAG, "Recording cancelled")
         }
     }
@@ -402,6 +404,7 @@ class SpeechOverlayService : AccessibilityService() {
         if (!isRecording) return
         isRecording = false
         overlayBtn.setBackgroundResource(R.drawable.overlay_bg)
+        overlayBtn.setImageResource(R.drawable.ic_bubble_white)
 
         val service = recordingService
         if (service == null) {
